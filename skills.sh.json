@@ -1,0 +1,13 @@
+{
+  "$schema": "https://skills.sh/schemas/skills.sh.schema.json",
+  "groupings": [
+    {
+      "title": "Independent review",
+      "description": "Hand your work to a fresh, read-only reviewer running in a separate CLI process, and get back a structured verdict (approve / changes_required + findings).",
+      "skills": [
+        "claude-review",
+        "codex-review"
+      ]
+    }
+  ]
+}

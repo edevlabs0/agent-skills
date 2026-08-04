@@ -1,0 +1,14 @@
+# OS / editor cruft
+.DS_Store
+*.swp
+
+# Node
+node_modules/
+
+# Local agent config (per-machine, not part of the package)
+CLAUDE.md
+
+# Review run artifacts, if a skill's --state-dir is pointed back into the repo
+.review-state/
+.claude-review/
+.codex-review/

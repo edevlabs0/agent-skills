@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "summary", "findings"],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["approve", "changes_required"],
+      "description": "approve = safe to ship as-is; changes_required = at least one finding must be addressed first."
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "description": "One short paragraph: what was reviewed and the overall judgment."
+    },
+    "findings": {
+      "type": "array",
+      "description": "Empty when approving. Each entry is an actionable defect, not a style preference.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "location", "problem", "required_change"],
+        "properties": {
+          "severity": { "type": "string", "enum": ["blocker", "major", "minor"] },
+          "location": { "type": "string", "minLength": 1, "description": "file:line or another precise locator." },
+          "problem": { "type": "string", "minLength": 1, "description": "What is wrong and why it matters." },
+          "required_change": { "type": "string", "minLength": 1, "description": "The concrete change that resolves it." }
+        }
+      }
+    }
+  }
+}
