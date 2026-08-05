@@ -9,12 +9,15 @@ npx skills add edevlabs0/agent-skills
 
 ## Skills
 
+Two independent-review primitives, plus a workstream runner built on top of them.
+
 | Skill | What it does | Reviewer CLI |
 | --- | --- | --- |
 | [`claude-review`](skills/claude-review/SKILL.md) | Independent, structured review of your work from a fresh `claude` process (clean context, read-only, model pinned at the CLI). Returns the same verdict shape as `codex-review`. | Claude Code (`claude`) |
 | [`codex-review`](skills/codex-review/SKILL.md) | Hand the OpenAI Codex CLI a brief and get a light, **verified** read-only verdict (approve / changes_required + findings). Cross-vendor second opinion. | OpenAI Codex (`codex`) |
+| [`ws-go`](skills/ws-go/SKILL.md) | Drive one workstream end to end: validate it against the real code before implementing, review each plan/change with the two skills above, verify with the project's gates, close out its docs and status, and hand back a fixed staging contract. You stay the implementer; it never stages or commits. | `codex-review` (default) / `claude-review` (fallback) |
 
-Both are review-only: you stay the implementer; the reviewer runs in a separate process and never edits your tree.
+`claude-review` and `codex-review` are review-only: you stay the implementer; the reviewer runs in a separate process and never edits your tree. `ws-go` orchestrates a full workstream but delegates every review to those two — it plans, implements, and verifies, but never stages or commits.
 
 ## Install
 
