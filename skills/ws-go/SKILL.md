@@ -3,8 +3,9 @@ name: ws-go
 description: >-
   Drive one workstream (WS) end to end with Codex review baked in: resolve which WS to work on,
   validate the WS's described tasks against the real code before touching anything, review each plan
-  and code change with codex-review, verify with the project's real gates, close out the WS's docs and
-  status, and hand back a fixed final-response contract ready for the human to stage and commit. Use
+  and code change with codex-review, verify with the project's real gates, reconcile the WS's docs and
+  status with what actually shipped (deferred parts included), and hand back a fixed final-response
+  contract ready for the human to stage and commit. Use
   when the user says "/ws-go", "start a workstream", "work the next WS", "run WS-<x>", or hands a
   workstream description and expects the standard validate/plan/implement + Codex-review + handoff
   cycle. Do NOT use for quick one-off edits, pure questions, or work the user explicitly wants done
@@ -18,7 +19,8 @@ metadata:
 You are the **implementer and orchestrator** for one workstream. This skill standardizes the cycle
 you repeat every WS so you never re-type it: **resolve the WS → validate it against the real code →
 obey the rules → do the work → review it with [codex-review](../codex-review/SKILL.md) → verify →
-close out its docs/status → hand back**. Codex-review is the engine; this skill decides *what* to run
+reconcile its docs/status with what shipped → hand back**. Codex-review is the engine; this skill
+decides *what* to run
 and *how to report it*. One WS per run.
 
 ## Invocation flags
@@ -69,10 +71,13 @@ Flags may appear anywhere in the user's invocation (e.g. `/ws-go WS-C3 -defer-re
   "small enough to skip review" path in a WS run — that is the whole point of the cycle. The **only**
   exception is an explicit `-defer-review` flag (see Invocation flags), which does not skip the review
   but relocates it to a separate session and forbids any "approved / ready to commit" claim here.
-- **Leave no stale docs or status behind.** A WS is not done until its own docs reflect what shipped
-  and its status is moved off `open`/`in-progress` to `completed`/`done` (Step 4.5). The common failure
-  is implementing the code and leaving the WS doc, plan, roadmap, and memory index still saying "open"
-  — that is an unfinished WS, not a finished one.
+- **Leave no stale docs behind — reconcile them with what actually shipped.** Before hand-back, the
+  WS's own docs and status must match reality *as of this run* (Step 4.5), so the next agent trusts them
+  instead of acting on a stale claim. "Reality" is not always "completed": a run may ship some parts and
+  **defer others**, correct scope, or split the WS. Record what that run's actual outcome was — parts
+  done, parts deferred/remaining, decisions made — rather than blindly flipping the status to `done`.
+  The failure this prevents is leaving the code changed while the WS doc, plan, roadmap, and memory
+  index still describe the pre-run world.
 - **Never stage, commit, or push.** You end by telling the human exactly what to stage; they commit.
   (Matches the user's global git rule.)
 - **Scope tests to the stage** (user's global rule): during implementation run the closest
@@ -215,39 +220,46 @@ the right scope per the Standing rules. Record exact commands, exit codes, and *
 skips** — never rely on memory or Codex's test claims. Missing required test evidence is a blocker,
 not a footnote.
 
-## Step 4.5 — Close the loop on docs & WS status
+## Step 4.5 — Reconcile the WS's docs & status with what shipped
 
-Code passing is not the finish line. A WS is done only when its **own documentation and status match
-what actually shipped** — the standard failure mode is leaving the code changed but every doc still
-describing the old world and every status field still saying `open`. Before the final response, sweep
-and update, treating each edited doc as a reviewable change (it goes through Step 3 with the rest of the
-diff, and `-defer-review` includes it in the deferred diff):
+Code passing is not the finish line. The **docs and status this WS owns must describe what this run
+actually did** — the standard failure mode is leaving the code changed while every doc still describes
+the pre-run world and every status field still says `open`, so a later agent acts on a stale claim. The
+goal is *truth*, not a green checkmark: if the run shipped everything, say completed; if it shipped some
+parts and **deferred** or split the rest, say exactly that. Before the final response, sweep and update,
+treating each edited doc as a reviewable change (it goes through Step 3 with the rest of the diff, and
+`-defer-review` includes it in the deferred diff):
 
-- **The WS doc itself** — mark its status `completed`/`done` (not `open`/`in-progress`/`next`), tick
-  its checklist/acceptance items, and note anything intentionally left out of scope. If Step 1.5
-  corrected a task, make the WS doc reflect the corrected reality, not the stale claim.
+- **The WS doc itself** — set its status to the *true* state (`completed` only if fully done; otherwise
+  `partially done` / `in-progress` with an explicit "shipped this run" vs. "deferred / remaining" split,
+  using whatever status vocabulary the project already uses). Tick the acceptance items that genuinely
+  landed, leave the rest unticked, and record what was deferred and why. If Step 1.5 corrected a task,
+  make the WS doc reflect the corrected reality, not the stale claim.
 - **Plans, roadmaps, and workstream indexes** — any `*-plan.md`, `*-workstreams.md`, remediation
-  roadmap, or tracking table that lists this WS: flip its entry to done and update any "next WS"
-  pointer that now moves on.
+  roadmap, or tracking table that lists this WS: move its entry to match reality (done, or
+  partially-done with the deferred items still tracked), and update any "next WS" pointer accordingly.
 - **Flow / behavior docs** — if the change altered behavior the docs describe (`current-flow.md`, API
-  notes, READMEs, module docs), update them to the new behavior. Run `docs-guard` on these.
+  notes, READMEs, module docs), update them to the *new, shipped* behavior — only for what actually
+  landed, not what's still deferred. Run `docs-guard` on these.
 - **Memory index** — if the project keeps an auto-memory `MEMORY.md`, update or add the one-line
-  pointer for this WS so the next session sees it as done, not open.
+  pointer so the next session sees the accurate state (done, or done-except-<deferred>), not the stale
+  "open".
 
-Do not invent status fields the project doesn't use, and don't touch unrelated docs — mirror the
-project's existing doc/status conventions. If a doc's "done" wording is genuinely ambiguous, ask rather
-than guess. List every doc/status file you touched in Step 5 §1 and include them in the stage list
-(Step 5 §5).
+Update docs to reflect *what shipped*, no more: don't mark deferred work as done, don't invent status
+fields the project doesn't use, and don't touch unrelated docs — mirror the project's existing
+doc/status conventions. If the right status wording is genuinely ambiguous, ask rather than guess. List
+every doc/status file you touched in Step 5 §1 and include them in the stage list (Step 5 §5).
 
 ## Step 5 — Final response (fixed contract)
 
-When the WS is validated, reviewed, verified, its docs/status closed out, and ready to commit, end with
+When the WS is validated, reviewed, verified, its docs/status reconciled with what shipped, and ready
+to commit, end with
 **exactly** these sections, in this order. Derive the review facts from the codex-review verdict/round
 files under the WS state dir, not recollection. Never stage or commit.
 
 1. **WHAT I DID** — the changes; any WS tasks Step 1.5 found already-done, corrected, or escalated (and
-   how each resolved); the docs/status files closed out in Step 4.5; and any explicitly unchanged
-   approved-risk areas.
+   how each resolved); the docs/status files reconciled in Step 4.5 (say what shipped vs. what was
+   deferred, and how the WS status now reads); and any explicitly unchanged approved-risk areas.
 2. **WHAT IT SOLVES** — per fix, a concrete before/after in the project's real domain terms.
 3. **REVIEW** — which reviewer ran and its **integrity tier**: `codex-review` (independent, cross-vendor,
    CLI-verified) or, if the fallback was used, `claude-review` (semi-independent, same-family,
@@ -296,8 +308,9 @@ this order:
 
 1. **WHAT I DID** — the changes; any WS tasks Step 1.5 found already-done or corrected (contradictions
    the model couldn't resolve alone were escalated to you, not guessed — a `-defer-review` run stops at
-   an unresolved contradiction rather than shipping it); the docs/status files closed out in Step 4.5;
-   and any explicitly unchanged approved-risk areas.
+   an unresolved contradiction rather than shipping it); the docs/status files reconciled in Step 4.5
+   (what shipped vs. what was deferred, and how the WS status now reads); and any explicitly unchanged
+   approved-risk areas.
 2. **WHAT IT SOLVES** — per change, a concrete before/after in the project's real domain terms.
 3. **TEST RESULTS** — each command run, its exit code, and **counts: passed / failed / skipped**,
    naming any failures or skips.

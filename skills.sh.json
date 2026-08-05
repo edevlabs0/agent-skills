@@ -11,7 +11,7 @@
     },
     {
       "title": "Workstream runner",
-      "description": "Drive one workstream end to end: validate it against the real code, review each plan/change with the review skills above, verify with the project's gates, close out docs and status, and hand back a fixed staging contract.",
+      "description": "Drive one workstream end to end: validate it against the real code, review each plan/change with the review skills above, verify with the project's gates, reconcile docs and status with what actually shipped, and hand back a fixed staging contract.",
       "skills": [
         "ws-go"
       ]
