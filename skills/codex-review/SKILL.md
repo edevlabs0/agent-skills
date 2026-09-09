@@ -2,15 +2,17 @@
 name: codex-review
 description: >-
   Hand the OpenAI Codex CLI a brief and have it review your work read-only, returning a light
-  structured verdict (approve / changes_required + findings). Claude is the implementer; Codex is the
-  independent reviewer. Use when you want an independent Codex review of a plan or a code change you
-  produced, with an optional rework loop. Not for letting Codex implement (use codex-delegate) or for
+  structured verdict (approve / changes_required + findings). You (any implementing agent) are the
+  implementer; the Codex CLI is the independent reviewer. Use when you want an independent Codex
+  review of a plan or a code change you produced, with an optional rework loop. The reviewer model
+  must differ from the implementer's. Not for letting Codex implement or for
   ordinary single-agent work.
 ---
 
 # Codex Review
 
-A lean review primitive. **You** (Claude) do the work — a plan or a code change — then hand Codex a
+A lean review primitive. **You** (whichever agent runs this skill — Claude Code, Codex CLI, OpenCode,
+or other) do the work — a plan or a code change — then hand Codex a
 brief and it reviews the repository **read-only** and returns a structured verdict. That is the whole
 loop:
 
@@ -22,7 +24,10 @@ report shape, that belongs in the calling workflow (e.g. the `ws-go` skill), not
 
 The one guarantee kept: every round is **verified** to have run read-only, at the exact model you
 pinned, in the target repo. That verification is what makes this a trustworthy review rather than an
-unchecked opinion — do not remove it or substitute a Claude subagent for Codex.
+unchecked opinion — do not remove it or substitute self-review in your own implementer context for
+the separate Codex process. Pin a reviewer model that **differs from the implementer's model**;
+when a Codex agent implements and Codex reviews, the pairing is same-family, so say so plainly in
+the report rather than claiming cross-vendor independence.
 
 ## Requirements
 
@@ -47,6 +52,7 @@ node <sd> review --repo <absolute-repo> --brief <absolute-brief> --model <exact-
   the files, or say "review the uncommitted changes (`git diff HEAD`)". Codex sees only this text plus
   the repository — no chat history — so put everything needed in it.
 - **`--model`** — pin an exact Codex model id; do not rely on the global default. It is verified.
+  It must differ from the implementer's model (Step 0A in `ws-go`, or your session model otherwise).
 - **`--effort`** — optional reasoning effort (`model_reasoning_effort`); omit to inherit Codex config.
 - **`--state-dir`** — optional. Reuse the **same** dir to resume the same Codex thread for a rework
   round (Codex remembers the prior round). Omit it for a one-shot review in a temp dir.
@@ -84,4 +90,5 @@ not approve.
 Stop and tell the human when Codex is unavailable, unauthenticated, times out, or exits non-zero; the
 thread, model, sandbox, or cwd cannot be verified; or the output is not a valid verdict. The failure
 exit codes are `3` transport (safe to retry once), `4` integrity, and `5` contract (do not retry —
-the same call fails identically). Do not replace a failed Codex round with Claude self-review.
+the same call fails identically). Do not replace a failed Codex round with self-review in your own
+implementer context.

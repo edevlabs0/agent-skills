@@ -1,64 +1,76 @@
 ---
 name: ws-go
 description: >-
-  Drive one workstream (WS) end to end with Codex review baked in: resolve which WS to work on,
+  Drive one workstream (WS) end to end with independent review baked in: resolve which WS to work on,
   validate the WS's described tasks against the real code before touching anything, review each plan
-  and code change with codex-review, verify with the project's real gates, reconcile the WS's docs and
-  status with what actually shipped (deferred parts included), and hand back a fixed final-response
-  contract ready for the human to stage and commit. Use
-  when the user says "/ws-go", "start a workstream", "work the next WS", "run WS-<x>", or hands a
-  workstream description and expects the standard validate/plan/implement + Codex-review + handoff
-  cycle. Do NOT use for quick one-off edits, pure questions, or work the user explicitly wants done
-  without Codex review.
+  and code change with a separately-configured reviewer skill, verify with the project's real gates,
+  reconcile the WS's docs and status with what actually shipped (deferred parts included), and hand
+  back a fixed final-response contract ready for the human to stage and commit. The implementer is
+  whichever agent runs this skill; the reviewer is selected per run (flag, saved default, or ask).
+  Use when the user says "/ws-go", "start a workstream", "work the next WS", "run WS-<x>", or hands a
+  workstream description and expects the standard validate/plan/implement + independent-review +
+  handoff cycle. Do NOT use for quick one-off edits, pure questions, or work the user explicitly
+  wants done without review.
 metadata:
-  version: 0.5.0
+  version: 0.7.0
 ---
 
-# WS-Go — workstream runner with Codex review
+# WS-Go — workstream runner with independent review
 
-You are the **implementer and orchestrator** for one workstream. This skill standardizes the cycle
-you repeat every WS so you never re-type it: **resolve the WS → validate it against the real code →
-obey the rules → do the work → review it with [codex-review](../codex-review/SKILL.md) → verify →
-reconcile its docs/status with what shipped → hand back**. Codex-review is the engine; this skill
-decides *what* to run
-and *how to report it*. One WS per run.
+You are the **implementer and orchestrator** for one workstream — and "you" is whichever agent
+runs this skill (Claude Code, Codex CLI, OpenCode, or any orchestrating agent with shell access),
+not a fixed model. This skill standardizes the cycle you repeat every WS so you never re-type it:
+**detect implementer + resolve reviewer (Step 0) → resolve the WS → validate it against the real
+code → obey the rules → do the work → review it with the resolved reviewer skill → verify →
+reconcile its docs/status with what shipped → hand back**. The reviewer skill is the engine; this
+skill decides *what* to run and *how to report it*. One WS per run.
+
+The reviewer is **never you in your own context**. It is always a separate review skill running in
+its own process (e.g. [codex-review](../codex-review/SKILL.md),
+[claude-review](../claude-review/SKILL.md)), pinned to a model that **differs from the
+implementer's**. Either direction works: Claude can implement while Codex reviews, or Codex can
+implement while Claude reviews — what matters is that implementer and reviewer are independent of
+each other, never self-review.
 
 ## Invocation flags
 
 Flags may appear anywhere in the user's invocation (e.g. `/ws-go WS-C3 -defer-review`).
 
 - **`-defer-review`** — do the implementation and verification in this session but **do not run the
-  Codex review here**. Instead, hand back a ready-to-paste prompt so the review runs in a separate
+  review here**. Instead, hand back a ready-to-paste prompt so the review runs in a separate
   session. This is the **only** sanctioned exception to the "review is non-negotiable" rule, and it is
-  strictly opt-in: never defer unless the user typed this flag. When it is set, skip Step 3, and end
+  strictly opt-in: never defer unless the user typed this flag (or explicitly picked "defer" when
+  asked to select a reviewer — see Step 0). When it is set, skip Step 3, and end
   with the **deferred final response (Step 5b)** — never the standard one. The work is explicitly
   **UNREVIEWED**: do not call it approved, verified-for-merge, or "ready to commit", and do not invent
-  a Codex verdict. Still write the review `brief.md` into the WS state dir so the separate session can
+  a review verdict. Still write the review `brief.md` into the WS state dir so the separate session can
   point straight at it.
 
-- **`-reviewer=<skill>[/<model>-<effort>]`** — **override the primary reviewer** for this run, replacing
-  the `codex-review` default outright. Unlike `-reviewer-fallback` (which only activates when Codex is
-  unavailable), this makes the named reviewer the one that actually runs, *even when Codex is available*
-  — use it to deliberately review on Fable (to test `claude-review`, or to spend Fable quota instead of
-  Codex quota). Grammar mirrors the fallback flag: `-reviewer=claude-review` (defaults to model `fable`,
-  effort `high`) or `-reviewer=claude-review/fable-5-high`. The review is still **non-negotiable** — this
-  changes *who* reviews, not *whether*. Constraints still hold: the reviewer model **must differ from the
-  implementer's**, and Step 5 §3 must disclose the reviewer identity and its integrity tier (a
-  `claude-review` verdict is semi-independent — never dress it up as a Codex one). If both `-reviewer` and
-  `-reviewer-fallback` are given, `-reviewer` is the primary and the fallback backs *it* up.
+- **`-reviewer=<skill>[/<model>-<effort>]`** — **select the reviewer** for this run. There is no
+  built-in default: this flag is the highest-priority way to set the reviewer, and it replaces any
+  saved default or interactive pick. Grammar: `-reviewer=codex-review` or
+  `-reviewer=claude-review` (each skill fills in its own documented model/effort defaults), or pin
+  them with `-reviewer=codex-review/<model>-high` /
+  `-reviewer=claude-review/fable-5-high`. The review is still **non-negotiable** — this
+  changes *who* reviews, not *whether*. Constraints still hold: the reviewer **must run in its own
+  process and its model must differ from the implementer's** (see Step 0), and Step 5 §3 must
+  disclose the reviewer identity and its integrity tier for this implementer×reviewer pairing. If
+  both `-reviewer` and `-reviewer-fallback` are given, `-reviewer` is the primary and the fallback
+  backs *it* up.
 
 - **`-reviewer-fallback=<skill>[/<model>-<effort>]`** — authorize a **fallback reviewer** for when the
-  primary reviewer (by default `codex-review`, or whatever `-reviewer` set) is *unavailable*. It does
-  not change the primary — it only names what to use if the primary can't be reached. Grammar: bare
-  `-reviewer-fallback=claude-review` (defaults to model `fable`, effort `high`), or pin them with
+  primary reviewer (whatever Step 0 resolved) is *unavailable*. It does
+  not change the primary — it only names what to use if the primary can't be reached. Grammar mirrors
+  `-reviewer`: bare `-reviewer-fallback=claude-review` or pinned
   `-reviewer-fallback=claude-review/fable-5-high`. **Fallback fires only on genuine unavailability**:
-  Codex quota exhausted, auth expired/unauthenticated, or transport/timeout (codex-review exit `3`,
+  quota exhausted, auth expired/unauthenticated, or transport/timeout (reviewer exit `3`,
   after its one sanctioned retry). It must **not** fire on CLI-missing/env/`doctor` failures, on
-  integrity (exit `4`) or contract (exit `5`) failures, or any case where Codex actually returned a
-  verdict — those still **fail closed** (see Fail closed). Without this flag, Codex unavailability
-  **stops** the run. When the fallback is used, the reviewer model **must differ from the
-  implementer's** model, and Step 5 §3 must disclose the reviewer identity and its weaker integrity
-  tier — never present a claude-review verdict as a Codex one.
+  integrity (exit `4`) or contract (exit `5`) failures, or any case where the primary actually returned a
+  verdict — those still **fail closed** (see Fail closed). Without this flag, primary unavailability
+  **stops** the run (unless the user authorizes a fallback when asked). When the fallback is used, the
+  fallback reviewer **must also run in its own process with a model that differs from the
+  implementer's**, and Step 5 §3 must disclose the reviewer identity and its integrity
+  tier — never present a same-family verdict with the authority of a cross-vendor one.
 
 ## Standing rules (every WS, non-negotiable)
 
@@ -67,10 +79,11 @@ Flags may appear anywhere in the user's invocation (e.g. `/ws-go WS-C3 -defer-re
   plan or write anything, verify the WS's described tasks, steps, and plan against the *actual* current
   code (Step 1.5). Contradictions get resolved or escalated there — you do not carry an unverified
   assumption into implementation.
-- **Any plan or code change is reviewed by Codex** via the `codex-review` skill. There is no
-  "small enough to skip review" path in a WS run — that is the whole point of the cycle. The **only**
-  exception is an explicit `-defer-review` flag (see Invocation flags), which does not skip the review
-  but relocates it to a separate session and forbids any "approved / ready to commit" claim here.
+- **Any plan or code change is reviewed by the resolved independent reviewer** (see Step 0).
+  There is no "small enough to skip review" path in a WS run — that is the whole point of the cycle.
+  The **only** exception is an explicit `-defer-review` flag (see Invocation flags), which does not
+  skip the review but relocates it to a separate session and forbids any "approved / ready to commit"
+  claim here.
 - **Leave no stale docs behind — reconcile them with what actually shipped.** Before hand-back, the
   WS's own docs and status must match reality *as of this run* (Step 4.5), so the next agent trusts them
   instead of acting on a stale claim. "Reality" is not always "completed": a run may ship some parts and
@@ -88,12 +101,75 @@ Flags may appear anywhere in the user's invocation (e.g. `/ws-go WS-C3 -defer-re
   issues: `clean-code-guard` on changed production code, `test-guard` on new/changed tests, and
   `docs-guard` when the change touches docs (including the WS's own `docs/<topic>/*` files and the
   status/doc updates from Step 4.5). These are a self-review pass, not a substitute for the
-  Codex/fallback review in Step 3 — run them first, fix what they surface, then send the cleaner diff
+  independent review in Step 3 — run them first, fix what they surface, then send the cleaner diff
   to the independent reviewer.
 - **Obey the active project live, don't hardcode it.** Before touching anything, read the repo's
-  root `CLAUDE.md`, the nearest directory-scoped `CLAUDE.md`, and any module `CLAUDE.md` for the
+  root agent rules (`AGENTS.md` where it exists, `CLAUDE.md` where it exists — read both when both
+  exist), the nearest directory-scoped rules, and any module rules for the
   area you'll change, plus the WS's own docs (`docs/<topic>/current-flow.md` as-is and any
   `*-plan.md` to-be). Those are the project's rules for this WS; follow them.
+
+## Step 0 — Detect implementer, resolve reviewer (runs first, every WS)
+
+Do this before anything else. It fixes *who implements* and *who reviews* for the whole run.
+
+### 0A — Detect and record the implementer
+
+The implementer is whatever agent invoked this skill. At run time it is implicit — it is this
+session — so no file is needed to route the work. Record it anyway, because later readers need it:
+Step 3 (to pin a different reviewer model), Step 5 §3 (review proof), and the deferred session
+(Step 5b, where this session is gone). Do not assume Claude, Codex, or any fixed model:
+
+- **Agent / vendor** — which harness is running (Claude Code, Codex CLI, OpenCode, other). Use the
+  session context if it names the harness; otherwise record what you can observe (e.g. which CLI
+  launched you) and mark the rest `unknown`.
+- **Model** — the exact implementing model id if visible (session/init event, system prompt, agent
+  config). If it is not visible, record `unknown` rather than guessing.
+
+Hold this record in memory through Step 1 — the WS state dir does not exist yet (its name needs the
+WS id). Write it into `ws.json` once the state dir exists (end of Step 1, see Step 2) and announce
+it (e.g. `Implementer: Codex CLI / gpt-5.4`). Every later step derives from that record. If the
+implementer is `unknown`, the reviewer must still be a separate review-skill process; note the
+weaker identity proof in Step 5 §3.
+
+### 0B — Resolve the reviewer
+
+Resolution order (first hit wins):
+
+1. **`-reviewer` flag** — explicit per-run choice; use it as-is.
+2. **`WS_GO_REVIEWER` env var** — per-agent saved choice (e.g. export it in the agent's shell
+   profile). Same `<skill>[/<model>-<effort>]` grammar as the flag. This is how one machine gives
+   Claude runs a different default reviewer than Codex runs.
+3. **Config file** — shared saved choice at `~/.config/ws-go/config.json` (honor
+   `$XDG_CONFIG_HOME` when set: `$XDG_CONFIG_HOME/ws-go/config.json`). Single JSON object, e.g.
+   `{ "defaultReviewer": "codex-review" }` or
+   `{ "defaultReviewer": "claude-review/fable-5-high" }` — same grammar as the flag. If the file
+   exists and `defaultReviewer` parses, use it.
+4. **Ask the user** — if none of the above set a reviewer, stop and ask before doing any WS work.
+   Offer the review skills installed on this host **by name** (the host resolves each name to its
+   own skill path — never store or guess directory paths; at minimum `codex-review` and
+   `claude-review`, plus any other installed `*-review` skill the host reports), one line each with
+   its integrity character (cross-vendor vs same-family *for this implementer*), plus two extra
+   options: `defer-review` (equal to passing `-defer-review`) and `none — stop`. Include a
+   follow-up on the selected reviewer: `save as default?` — writing the choice as
+   `defaultReviewer` into the config file above (and noting the `WS_GO_REVIEWER` alternative for a
+   per-agent-only default). Do not start Step 1 until the user picks a reviewer, defers, or stops.
+
+Write the resolved reviewer (skill + model + effort) into `ws.json` alongside the Step 0A record
+once the state dir exists (end of Step 1). The saved value is always a skill **name** — path
+resolution is the host's job. If the host cannot resolve the name, fail closed with a clear error
+instead of guessing a path.
+
+Rules:
+
+- The reviewer **must be a separate review skill in its own process** — never review in your own
+  implementer context, never substitute an in-process subagent that inherits your model.
+- The reviewer **model must differ from the implementer's model**. When both are the same family
+  (Claude reviewing Claude work, Codex reviewing Codex work), this is what keeps the review useful —
+  pin a different model explicitly (each review skill documents its model default; override it when
+  it collides with the Step 0A record).
+- `-reviewer-fallback` never selects the primary — it only authorizes what Step 3 may use when the
+  primary is genuinely unavailable.
 
 ## Step 1 — Resolve the workstream
 
@@ -107,7 +183,9 @@ work and let them pick or specify one. Gather candidates from all three sources:
 - **Memory**: read the auto-memory index (`MEMORY.md`) for in-progress WS notes and decisions.
 
 Present a short numbered list (WS id · one-line scope · source), then ask the user to choose or
-describe a different one. Do not start work until the WS is fixed.
+describe a different one. Do not start work until the WS is fixed. Once it is fixed, create the WS
+state dir (see Step 2) and write `ws.json` — the single WS config holding the Step 0A implementer
+record and the Step 0B resolved reviewer (skill + model + effort) — then continue.
 
 ## Step 1.5 — Validate the WS against the real code (never implement blindly)
 
@@ -136,7 +214,7 @@ Classify what you find and act:
 - **Contradiction / inconsistency / error you can resolve confidently** — correct the task's
   description to match reality, state the correction and the evidence, and **confirm the correction with
   the reviewer** before building on it: a corrected understanding is a plan change, so route it through
-  the same `codex-review` loop (Step 3) as a mini plan review. If the reviewer agrees, proceed on the
+  the same review loop (Step 3) as a mini plan review. If the reviewer agrees, proceed on the
   corrected basis; record the correction so Step 5 §1 reflects it.
 - **Contradiction you cannot resolve confidently** — do **not** guess, and do **not** implement on a
   shaky premise. Escalate:
@@ -155,7 +233,7 @@ proceed, with your recommendation. Then wait — do not implement past an unreso
 
 ## Step 2 — Decide what this run produces
 
-Establish what the WS run delivers, because each deliverable gets its own Codex review:
+Establish what the WS run delivers, because each deliverable gets its own independent review:
 
 - **A plan** — an audit or improvement/implementation plan. Review it before writing code.
 - **An implementation** — the code change. Review it before handing back.
@@ -166,46 +244,43 @@ Rules:
 - If the plan was **already reviewed and agreed** (this WS's earlier session, or the user hands you an
   approved plan), don't re-plan — go straight to implementing and reviewing the code. (You still run
   Step 1.5: an agreed plan can still have gone stale against the code since it was agreed.)
-- Any plan you author and any code you change **must** be reviewed via `codex-review` before it counts
-  as done. There is no skip path.
+- Any plan you author and any code you change **must** be reviewed by the Step 0 reviewer before it
+  counts as done. There is no skip path.
 - **State dir**: one per WS, stable and outside the repo, reused across sessions and across both the
-  plan and implementation reviews — e.g. `<scratch>/ws-go/<ws-id>/`. Reusing it resumes the same Codex
-  thread, so the implementation review remembers the plan review. Announce the path.
-- **Model/effort**: pin an exact Codex model and, for anything non-trivial, `--effort high`.
+  plan and implementation reviews — e.g. `<scratch>/ws-go/<ws-id>/`. Reusing it resumes the same
+  reviewer thread (where the review skill supports resume), so the implementation review remembers
+  the plan review. Holds `ws.json` (the single WS config: WS id, Step 0A implementer, Step 0B
+  reviewer) alongside the briefs and verdicts. Announce the path.
+- **Model/effort**: pin an exact reviewer model (one that differs from the Step 0A implementer) and,
+  for anything non-trivial, high effort (`--effort high` or the review skill's equivalent).
 
-## Step 3 — Run the codex-review loop
+## Step 3 — Run the review loop
 
-**If `-defer-review` was passed, skip this step** — write the `brief.md` into the WS state dir (so the
-separate session can review from it), then go to Step 4 and finish with the deferred response (Step 5b).
+**If `-defer-review` was passed (or the user picked defer in Step 0), skip this step** — write the
+`brief.md` into the WS state dir (so the separate session can review from it), then go to Step 4 and
+finish with the deferred response (Step 5b).
 
-Use the **codex-review** skill (`review` verb) as the default reviewer. For each deliverable: do the
-work, write a brief describing it and what to scrutinize (for code, point the reviewer at the change),
-then run `review` against the WS state dir. **Resolve the review target when writing the brief — don't
-assume the WS is still uncommitted:** if the tree is dirty review `git diff HEAD` (plus named untracked
-paths); if the human already committed the WS (a real case mid-run), point at the WS commit(s) instead
-(`git show <sha>` / `git diff <base>..<head>`), and state that an empty diff is not an approval. Read the verdict;
+Run the **Step 0 reviewer** (the `review` verb of whichever review skill Step 0 resolved). For each
+deliverable: do the work, write a brief describing it and what to scrutinize (for code, point the
+reviewer at the change), then run `review` against the WS state dir. **Resolve the review target when
+writing the brief — don't assume the WS is still uncommitted:** if the tree is dirty review
+`git diff HEAD` (plus named untracked paths); if the human already committed the WS (a real case
+mid-run), point at the WS commit(s) instead (`git show <sha>` / `git diff <base>..<head>`), and state
+that an empty diff is not an approval. Read the verdict;
 if `changes_required`, fix each finding and re-`review` with the same state dir and a short delta brief.
 Repeat until `approve`. Do not reverse roles, and never call advisory prose an approval.
 
-**Reviewer selection and fallback.** The **primary reviewer** is `codex-review` by default, or whatever
-`-reviewer=<skill>[/<model>-<effort>]` names if that flag was passed. Run the primary against the WS
-state dir with the brief, and loop until `approve`.
-
-- **`-reviewer` was passed** (e.g. `-reviewer=claude-review/fable-5-high`) → that reviewer *is* the
-  primary; run it and do **not** touch Codex at all. This is the deliberate "review on Fable" path
-  (testing `claude-review`, or sparing Codex quota). The review is still mandatory; only the reviewer
-  changed. For `claude-review`, pin a model that **differs from the implementer's** (default `fable`,
-  effort `high`).
-- **No `-reviewer`** → Codex-review is primary, and unless the caller authorized a fallback it is the
-  only reviewer — do not substitute a Claude subagent on your own initiative.
+**Primary and fallback.** The **primary reviewer** is whatever Step 0 resolved. Run it against the WS
+state dir with the brief, and loop until `approve`. Do not substitute a different reviewer — and
+never an in-process subagent — on your own initiative.
 
 If the **primary** reviewer is *unavailable* — quota exhausted, unauthenticated/auth-expired, or
-transport/timeout (codex-review exit `3`, after its one sanctioned retry) — then:
+transport/timeout (reviewer exit `3`, after its one sanctioned retry) — then:
 
-- if `-reviewer-fallback=<skill>[/<model>-<effort>]` was passed, run that fallback reviewer instead
-  (typically [`claude-review`](../claude-review/SKILL.md)), against the **same WS state dir**, with the
-  same brief. Pin the fallback model so it **differs from the implementer's** model (default `fable`,
-  effort `high`), and run the identical `changes_required` → fix → re-review loop until `approve`;
+- if `-reviewer-fallback=<skill>[/<model>-<effort>]` was passed (or the user authorizes one when
+  asked), run that fallback reviewer instead, against the **same WS state dir**, with the
+  same brief. Pin the fallback model so it **differs from the implementer's** model, and run the
+  identical `changes_required` → fix → re-review loop until `approve`;
 - if no fallback was authorized, **fail closed** — stop and tell the human the primary is unavailable.
 
 Do **not** fall back on CLI-missing/env/`doctor` failures, integrity (exit `4`), contract (exit `5`),
@@ -217,7 +292,7 @@ its integrity tier.
 
 Discover the project's **real** gate commands from its docs/config (don't assume) and run them at
 the right scope per the Standing rules. Record exact commands, exit codes, and **counts / failures /
-skips** — never rely on memory or Codex's test claims. Missing required test evidence is a blocker,
+skips** — never rely on memory or the reviewer's test claims. Missing required test evidence is a blocker,
 not a footnote.
 
 ## Step 4.5 — Reconcile the WS's docs & status with what shipped
@@ -254,19 +329,23 @@ every doc/status file you touched in Step 5 §1 and include them in the stage li
 
 When the WS is validated, reviewed, verified, its docs/status reconciled with what shipped, and ready
 to commit, end with
-**exactly** these sections, in this order. Derive the review facts from the codex-review verdict/round
+**exactly** these sections, in this order. Derive the review facts from the reviewer's verdict/round
 files under the WS state dir, not recollection. Never stage or commit.
 
 1. **WHAT I DID** — the changes; any WS tasks Step 1.5 found already-done, corrected, or escalated (and
    how each resolved); the docs/status files reconciled in Step 4.5 (say what shipped vs. what was
    deferred, and how the WS status now reads); and any explicitly unchanged approved-risk areas.
 2. **WHAT IT SOLVES** — per fix, a concrete before/after in the project's real domain terms.
-3. **REVIEW** — which reviewer ran and its **integrity tier**: `codex-review` (independent, cross-vendor,
-   CLI-verified) or, if the fallback was used, `claude-review` (semi-independent, same-family,
-   by-construction — say so plainly and never dress it up as a Codex verdict). Then: what was reviewed
+3. **REVIEW** — the Step 0A implementer (`agent / model` from `ws.json`); which reviewer ran
+   and its **integrity tier for this pairing**: `codex-review` is cross-vendor and CLI-verified when
+   the implementer is *not* Codex (independent, strongest), and same-family when a Codex agent
+   implements and Codex reviews (useful, but say so plainly); `claude-review` is cross-vendor and
+   by-construction when the implementer is *not* Claude, and semi-independent same-family when
+   Claude implements and Claude reviews (useful only with a different model — say so plainly and
+   never dress it up with cross-vendor authority). Then: what was reviewed
    (plan and/or code); how many rounds; the findings raised (severity · location) and how each was
    resolved (fixed / rejected-with-evidence / deferred); the final verdict; and the reviewer's identity
-   proof — for Codex the exact model · verified sandbox · thread id; for claude-review the exact model
+   proof — for codex-review the exact model · verified sandbox · thread id; for claude-review the exact model
    (as seen in the reviewer process's init event, e.g. `claude-fable-5`) · effort · session id, noting
    the read-only/independence guarantees are by-construction, not verified.
 4. **TEST RESULTS** — each command run, its exit code, and **counts: passed / failed / skipped**,
@@ -299,11 +378,11 @@ files under the WS state dir, not recollection. Never stage or commit.
 
 End with: `Nothing staged, nothing committed — that's yours.`
 
-## Step 5b — Deferred final response (only when `-defer-review` was passed)
+## Step 5b — Deferred final response (only when review was deferred)
 
 The review has **not** run. Do not use the Step 5 contract or its closing line, and make no
 "approved / ready to commit" claim. Open with a one-line banner —
-`⚠️ IMPLEMENTATION ONLY — CODEX REVIEW DEFERRED — DO NOT COMMIT UNTIL IT RETURNS approve` — then, in
+`⚠️ IMPLEMENTATION ONLY — REVIEW DEFERRED — DO NOT COMMIT UNTIL IT RETURNS approve` — then, in
 this order:
 
 1. **WHAT I DID** — the changes; any WS tasks Step 1.5 found already-done or corrected (contradictions
@@ -314,10 +393,12 @@ this order:
 2. **WHAT IT SOLVES** — per change, a concrete before/after in the project's real domain terms.
 3. **TEST RESULTS** — each command run, its exit code, and **counts: passed / failed / skipped**,
    naming any failures or skips.
-4. **REVIEW-SESSION PROMPT** — the ready-to-paste block for the separate session: the absolute
-   **repo path**, the **WS state-dir** path, the **`brief.md`** path already written there, and the
-   exact `codex-review` invocation to run — pinned model and `--effort`, `--repo`, `--brief`, the same
-   `--state-dir`. Tell that session to **resolve the review target itself**: review `git diff HEAD` (plus
+4. **REVIEW-SESSION PROMPT** — the ready-to-paste block for the separate session: the Step 0A
+   implementer and Step 0B reviewer records (from `ws.json`), the absolute **repo path**, the **WS
+   state-dir** path, the **`brief.md`** path already written there, and the exact reviewer invocation
+   to run — review skill name, pinned model (different from the implementer) and effort, `--repo`,
+   `--brief`, the same `--state-dir`.
+   Tell that session to **resolve the review target itself**: review `git diff HEAD` (plus
    named untracked paths) if the tree is still dirty, or the WS commit(s) (`git show <sha>` /
    `git diff <base>..<head>`) if the human committed in the meantime — and that an empty diff is not an
    approval. State the current worktree state (dirty vs which commit) as of hand-off.
@@ -329,12 +410,14 @@ End with: `Nothing staged, nothing committed, review deferred — run the prompt
 
 ## Fail closed
 
-Stop and tell the human if: the WS can't be fixed; **Step 1.5 surfaces a contradiction the model (and
+Stop and tell the human if: the WS can't be fixed; no reviewer could be resolved in Step 0 (user
+picked "none — stop"); **Step 1.5 surfaces a contradiction the model (and
 the reviewer, when one is running) can't confidently resolve** — return the clarification question and
-wait, do not implement past it; Codex is unavailable **and** no `-reviewer-fallback` was authorized (or
-it failed for a non-fallback reason — CLI/env/`doctor`, integrity exit `4`, or contract exit `5`); the
-authorized fallback reviewer is itself unavailable or returns a malformed verdict; a review (by either
-reviewer) stays `changes_required` after reasonable rework; the reviewer's model/sandbox/thread (or
-claude-review session) can't be recorded; or the project's gates can't be run or fail. Do not paper over
+wait, do not implement past it; the primary reviewer is unavailable **and** no `-reviewer-fallback`
+was authorized (or it failed for a non-fallback reason — CLI/env/`doctor`, integrity exit `4`, or
+contract exit `5`); the authorized fallback reviewer is itself unavailable or returns a malformed
+verdict; a review (by either reviewer) stays `changes_required` after reasonable rework; the
+implementer's identity (Step 0A) or the reviewer's model/sandbox/thread (or reviewer session) can't
+be recorded; or the project's gates can't be run or fail. Do not paper over
 a failed gate, do not label advisory prose as an approval, and do not silently self-review — reviewing
 the work in your own implementer context is never a valid substitute for the independent reviewer.

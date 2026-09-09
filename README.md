@@ -15,9 +15,9 @@ Two independent-review primitives, plus a workstream runner built on top of them
 | --- | --- | --- |
 | [`claude-review`](skills/claude-review/SKILL.md) | Independent, structured review of your work from a fresh `claude` process (clean context, read-only, model pinned at the CLI). Returns the same verdict shape as `codex-review`. | Claude Code (`claude`) |
 | [`codex-review`](skills/codex-review/SKILL.md) | Hand the OpenAI Codex CLI a brief and get a light, **verified** read-only verdict (approve / changes_required + findings). Cross-vendor second opinion. | OpenAI Codex (`codex`) |
-| [`ws-go`](skills/ws-go/SKILL.md) | Drive one workstream end to end: validate it against the real code before implementing, review each plan/change with the two skills above, verify with the project's gates, reconcile its docs and status with what actually shipped (deferred parts included), and hand back a fixed staging contract. You stay the implementer; it never stages or commits. | `codex-review` (default) / `claude-review` (fallback) |
+| [`ws-go`](skills/ws-go/SKILL.md) | Drive one workstream end to end: detect the implementer (whichever agent runs it), resolve the reviewer per run (flag, saved default, or ask), validate the WS against the real code before implementing, review each plan/change with the reviewer skills, verify with the project's gates, reconcile its docs and status with what actually shipped (deferred parts included), and hand back a fixed staging contract. You stay the implementer; it never stages or commits. | Resolved per run (`-reviewer`, `WS_GO_REVIEWER`, `~/.config/ws-go/config.json`, or ask) |
 
-`claude-review` and `codex-review` are review-only: you stay the implementer; the reviewer runs in a separate process and never edits your tree. `ws-go` orchestrates a full workstream but delegates every review to those two — it plans, implements, and verifies, but never stages or commits.
+`claude-review` and `codex-review` are review-only: you stay the implementer (whichever agent you run); the reviewer runs in a separate process and never edits your tree. `ws-go` orchestrates a full workstream but delegates every review to those skills — it plans, implements, and verifies, but never stages or commits.
 
 ## Install
 

@@ -3,20 +3,22 @@ name: claude-review
 description: >-
   Get an independent, structured review of your work from a fresh Claude reviewer running in a
   SEPARATE `claude` CLI process (clean context, read-only, model pinned at the CLI), returning the same
-  verdict shape as codex-review (approve / changes_required + findings). You are the implementer; the
-  reviewer is a different, pinned model in its own OS process with no access to your working chat — so
-  the reviewer's model is decoupled from yours (Opus can implement while Fable reviews). Use when you
+  verdict shape as codex-review (approve / changes_required + findings). You (any implementing agent)
+  are the implementer; the reviewer is a different, pinned model in its own OS process with no access
+  to your working chat — so the reviewer's model is decoupled from yours (Opus can implement while
+  Fable reviews, or a Codex agent can implement while Claude reviews). Use when you
   want a second-opinion review of a plan or code change and an independent-vendor reviewer (Codex) is
-  unavailable, or when you deliberately want a Claude reviewer on a different model than the implementer.
-  Not for letting the reviewer implement — this is review only.
+  unavailable, or when you deliberately want a Claude reviewer with a different model than the
+  implementer. Not for letting the reviewer implement — this is review only.
 metadata:
-  version: 0.2.0
+  version: 0.3.0
 ---
 
 # Claude Review
 
 A review primitive that mirrors [codex-review](../codex-review/SKILL.md), but the reviewer is a **fresh
-`claude` CLI process** instead of the Codex CLI. **You** (the caller) do the work — a plan or a code
+`claude` CLI process** instead of the Codex CLI. **You** (the caller — Claude Code, Codex CLI,
+OpenCode, or any implementing agent) do the work — a plan or a code
 change — then run one command that launches a separate `claude` process which reviews the repository
 **read-only** and returns a structured verdict. The loop is identical:
 
@@ -34,18 +36,21 @@ session model, so an Opus session reviewing with the Agent tool gets an **Opus r
 separate process fixes that: the model you pass with `--model` is the model that actually runs (you can
 see it in the child's `system/init` event, e.g. `"model": "claude-fable-5"`), completely independent of
 the orchestrator's model. **Always cross the model line — the reviewer model must differ from the
-implementer's.** Default reviewer model: `fable` while the implementer is Opus.
+implementer's, whoever the implementer is.** Default reviewer model: `fable` when the implementer is
+an Opus-class Claude agent; when the implementer is a non-Claude agent (e.g. Codex), any pinned Claude
+model already crosses the vendor line, but still pin it explicitly.
 
 ## Independence tier
 
-This is a **weaker guarantee than codex-review**, by design, and must be labeled as such wherever the
-verdict is reported:
+The tier depends on the **implementer × reviewer pairing**, not on this skill alone:
 
-- codex-review is **cross-vendor** (GPT/Codex) and its model + read-only sandbox are **verified by the
-  CLI** (observed model, observed sandbox). That independence is what catches bugs a
-  Claude-implementing-Claude would share.
-- claude-review is **same-family**: a Claude process reviewing Claude's work shares training and blind
-  spots. Using a **different model than the implementer** (e.g. Fable reviewing Opus) is what makes it
+- codex-review is **cross-vendor and CLI-verified** when the implementer is *not* Codex (observed
+  model, observed sandbox). That independence is what catches bugs a same-family reviewer would share.
+  When a Codex agent implements and Codex reviews, the pairing is same-family — useful, but weaker.
+- claude-review is **cross-vendor and by-construction** when the implementer is *not* Claude (e.g.
+  Claude reviewing Codex work): a fresh non-session process with no working-chat context. When Claude
+  implements and Claude reviews, it is **same-family**: shared training and blind
+  spots, and using a **different model than the implementer** (e.g. Fable reviewing Opus) is what makes it
   useful.
 - Its guarantees are **by construction**: independence comes from a fresh non-session process (no
   working-chat context); the model is pinned via `--model` and observable in the init event; read-only
@@ -54,10 +59,11 @@ verdict is reported:
   attestation** like Codex has — the init-event model and the tripwire are strong by-construction
   evidence, not a verified sandbox.
 
-Order of preference when both exist: **codex-review (independent, verified) > claude-review
-(semi-independent, by-construction) > no review.** Prefer it as a *fallback* tier; don't present its
-verdict with the authority of a Codex one. "Independent" means *not the author's context*, not "not
-Claude" — this skill works equally to have Claude review a Codex implementation.
+Order of preference for a Claude implementer, when both exist: **codex-review (independent, verified) > claude-review
+(semi-independent, by-construction) > no review.** For a non-Claude implementer, either reviewer
+crosses the vendor line — pick by availability, cost, and verification needs. Prefer it as a
+*fallback* tier for same-family pairings; don't present a same-family verdict with the authority of
+a cross-vendor one. "Independent" means *not the author's context*, not "not Claude" — this skill works equally to have Claude review a Codex implementation.
 
 ## Requirements
 
