@@ -27,10 +27,11 @@ skill decides *what* to run and *how to report it*. One WS per run.
 
 The reviewer is **never you in your own context**. It is always a separate review skill running in
 its own process (e.g. [codex-review](../codex-review/SKILL.md),
-[claude-review](../claude-review/SKILL.md)), pinned to a model that **differs from the
-implementer's**. Either direction works: Claude can implement while Codex reviews, or Codex can
-implement while Claude reviews — what matters is that implementer and reviewer are independent of
-each other, never self-review.
+[claude-review](../claude-review/SKILL.md),
+[opencode-review](../opencode-review/SKILL.md)), pinned to a model that **differs from the
+implementer's**. Any direction works: Claude can implement while Codex reviews, Codex can
+implement while Claude reviews, or opencode can review either — what matters is that implementer
+and reviewer are independent of each other, never self-review.
 
 ## Invocation flags
 
@@ -49,9 +50,14 @@ Flags may appear anywhere in the user's invocation (e.g. `/ws-go WS-C3 -defer-re
 - **`-reviewer=<skill>[/<model>-<effort>]`** — **select the reviewer** for this run. There is no
   built-in default: this flag is the highest-priority way to set the reviewer, and it replaces any
   saved default or interactive pick. Grammar: `-reviewer=codex-review` or
-  `-reviewer=claude-review` (each skill fills in its own documented model/effort defaults), or pin
+  `-reviewer=claude-review` (those two skills fill in their own documented model/effort defaults), or pin
   them with `-reviewer=codex-review/<model>-high` /
-  `-reviewer=claude-review/fable-5-high`. The review is still **non-negotiable** — this
+  `-reviewer=claude-review/fable-5-high`. For `opencode-review` the model is `provider/model`
+  (it contains a slash), so the form is `-reviewer=opencode-review/<provider>/<model>-<effort>`
+  (e.g. `-reviewer=opencode-review/opencode/muse-spark-1.3-contributor-free-high` — skill is the
+  first segment, effort is after the last dash, everything between is the model); bare
+  `-reviewer=opencode-review` is not enough since that skill requires an explicit `--model`.
+  The review is still **non-negotiable** — this
   changes *who* reviews, not *whether*. Constraints still hold: the reviewer **must run in its own
   process and its model must differ from the implementer's** (see Step 0), and Step 5 §3 must
   disclose the reviewer identity and its integrity tier for this implementer×reviewer pairing. If
@@ -147,8 +153,8 @@ Resolution order (first hit wins):
    exists and `defaultReviewer` parses, use it.
 4. **Ask the user** — if none of the above set a reviewer, stop and ask before doing any WS work.
    Offer the review skills installed on this host **by name** (the host resolves each name to its
-   own skill path — never store or guess directory paths; at minimum `codex-review` and
-   `claude-review`, plus any other installed `*-review` skill the host reports), one line each with
+   own skill path — never store or guess directory paths; at minimum `codex-review`,
+   `claude-review`, and `opencode-review`, plus any other installed `*-review` skill the host reports), one line each with
    its integrity character (cross-vendor vs same-family *for this implementer*), plus two extra
    options: `defer-review` (equal to passing `-defer-review`) and `none — stop`. Include a
    follow-up on the selected reviewer: `save as default?` — writing the choice as
@@ -342,12 +348,17 @@ files under the WS state dir, not recollection. Never stage or commit.
    implements and Codex reviews (useful, but say so plainly); `claude-review` is cross-vendor and
    by-construction when the implementer is *not* Claude, and semi-independent same-family when
    Claude implements and Claude reviews (useful only with a different model — say so plainly and
-   never dress it up with cross-vendor authority). Then: what was reviewed
+   never dress it up with cross-vendor authority); `opencode-review` is cross-vendor and
+   by-construction when the implementer is *not* opencode, and semi-independent same-family when
+   an opencode agent implements and opencode reviews (useful only with a different model — say so
+   plainly, same rule as claude-review). Then: what was reviewed
    (plan and/or code); how many rounds; the findings raised (severity · location) and how each was
    resolved (fixed / rejected-with-evidence / deferred); the final verdict; and the reviewer's identity
    proof — for codex-review the exact model · verified sandbox · thread id; for claude-review the exact model
    (as seen in the reviewer process's init event, e.g. `claude-fable-5`) · effort · session id, noting
-   the read-only/independence guarantees are by-construction, not verified.
+   the read-only/independence guarantees are by-construction, not verified; for opencode-review the exact
+   `provider/model` · effort · agent · session id from the JSON event stream, noting the read-only
+   (plan agent) and independence guarantees are by-construction, not verified.
 4. **TEST RESULTS** — each command run, its exit code, and **counts: passed / failed / skipped**,
    naming any failures or skips.
 5. **WHAT TO STAGE** — literal `git add` commands with hunk-level precision (include the Step 4.5

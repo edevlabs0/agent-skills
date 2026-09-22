@@ -16,7 +16,7 @@
     },
     "findings": {
       "type": "array",
-      "description": "Empty when approving. Each entry is an actionable defect, not a style preference.",
+      "description": "When approving, only minor findings (or none) are allowed. Each entry is an actionable defect, not a style preference.",
       "items": {
         "type": "object",
         "additionalProperties": false,

@@ -1,76 +1,104 @@
 #!/usr/bin/env node
 /**
- * claude-review · claude-review.mjs
+ * opencode-review · opencode-review.mjs
  *
- * Run an INDEPENDENT, READ-ONLY code/plan review in a SEPARATE `claude` CLI
- * process pinned to a model you choose — the analog of codex-review.mjs, but the
- * reviewer is a fresh Claude process instead of Codex. This is what decouples the
- * reviewer's model from the orchestrator's: the orchestrator may be Opus while
- * the review runs on Fable, because the reviewer is its own OS process launched
- * with `claude --model <id>`, not an in-process Agent-tool subagent that inherits
- * the session model.
+ * Run an INDEPENDENT, READ-ONLY code/plan review in a SEPARATE `opencode run`
+ * process pinned to a model you choose — the analog of codex-review.mjs and
+ * claude-review.mjs, but the reviewer is a fresh opencode process instead of
+ * Codex or Claude. This is what decouples the reviewer's model from the
+ * orchestrator's: the orchestrator may run Opus/GPT while the review runs on
+ * a different provider/model, because the reviewer is its own OS process
+ * launched with `opencode run --model <provider/model>`, not an in-process
+ * subagent that inherits the session model.
  *
  * The whole loop:
- *   capture the review target (git diff) → launch `claude -p` read-only, pinned
- *   model, brief on stdin → capture its final message → extract + validate the
- *   verdict JSON against reviewer-verdict.schema.json → persist the round →
- *   print a structured result. Resume the same thread for a rework round.
+ *   capture the review target (git diff) → launch `opencode run` read-only
+ *   (plan agent), pinned model, full prompt attached via `--file` → capture
+ *   its text output → extract + validate the verdict JSON against
+ *   reviewer-verdict.schema.json → persist the round → print a structured
+ *   result. Resume the same session for a rework round.
+ *
+ * Prompt delivery uses `--file` (plus a one-line pointer message) rather than
+ * a giant argv positional so prompts of any length survive Windows cmd.exe
+ * quoting through npm `opencode.cmd` shims.
  *
  * Trust posture: no network of its own, no credentials, no telemetry, Node
- * built-ins only. It launches `claude` (which authenticates and calls the API
- * exactly as it does at the terminal) and runs read-only `git` inspection
- * commands. The child runs in Claude's `plan` permission mode with only Read,
- * Glob, and Grep — no Edit/Write/shell/MCP/skills/commands — so it cannot mutate
- * the repo; a git-porcelain tripwire (readOnlyViolation) is recorded as a
- * backstop. Independence is BY CONSTRUCTION (fresh non-session process, pinned
- * model, read-only tools), NOT cryptographically verified the way Codex verifies
- * its observed model + sandbox. Label the verdict accordingly.
+ * built-ins only. It launches `opencode` (which authenticates exactly as it
+ * does at the terminal) and runs read-only `git` inspection commands. The
+ * child runs as the `plan` agent (which refuses file writes in non-interactive
+ * mode) under a prompt that orders strict read-only behavior; a git-porcelain
+ * tripwire (readOnlyViolation) is recorded as a backstop. Independence is BY
+ * CONSTRUCTION (fresh process, pinned model, read-only agent), NOT
+ * cryptographically verified the way Codex verifies its observed model +
+ * sandbox. Label the verdict accordingly.
  *
  * Usage:
- *   node claude-review.mjs review  --repo <dir> --brief <file> --model <id> [options]
- *   node claude-review.mjs doctor
- *   node claude-review.mjs --help
+ *   node opencode-review.mjs review --repo <dir> --brief <file> --model <provider/model> [options]
+ *   node opencode-review.mjs doctor
+ *   node opencode-review.mjs --help
  *
  * review options:
  *   --repo <dir>          Git repository to review in (required).
  *   --brief <file>        Brief describing the work and what to scrutinize (required).
- *   --model <id>          Claude model alias or id to PIN for the reviewer, e.g.
- *                         `fable`, `claude-fable-5`, `sonnet` (required). Make it
- *                         DIFFER from the implementer's model.
+ *   --model <id>          Model to PIN for the reviewer in provider/model form,
+ *                         e.g. `opencode/muse-spark-1.3-contributor-free`
+ *                         (required). Make it DIFFER from the implementer's model.
  *   --mode code|plan      code (default): capture and review a git diff. plan:
  *                         no diff; review the plan carried in the brief.
- *   --target <spec>       code mode only. `working` (default) = `git diff HEAD`
- *                         plus every untracked, non-ignored file (each file
- *                         inside a new folder too). `A..B` = `git diff A..B`. Any
- *                         other value = a commit reviewed via `git show <value>`.
+ *   --target <spec>       code mode only. `working` (default) = TRACKED changes
+ *                         only (`git diff HEAD`). Untracked files are NEVER
+ *                         swept in — name them with --include-untracked or
+ *                         hand-build the patch with --patch. `A..B` =
+ *                         `git diff A..B`. Any other value = a commit reviewed
+ *                         via `git show <value>`.
+ *   --include-untracked <paths>
+ *                         code mode only. Comma-separated and/or repeatable:
+ *                         untracked files to append to a `working` target
+ *                         (e.g. `--include-untracked new.js,lib/new2.js`).
+ *                         Each path must exist under --repo.
+ *   --patch <file>        code mode only. Use this hand-built patch file as
+ *                         the review target instead of capturing from git.
+ *                         Cannot be combined with --target or
+ *                         --include-untracked.
  *   --effort <level>      Reviewer reasoning effort: low|medium|high|xhigh|max.
- *                         Passed to `claude --effort`. Default: high.
+ *                         Passed to `opencode run --variant`. Default: high.
+ *   --agent <name>        opencode agent for the reviewer. Default: plan
+ *                         (refuses file writes). Use a custom read-only agent
+ *                         only if you know what you are doing.
  *   --state-dir <dir>     Persist rounds/agent.json here; reuse across rounds.
  *                         Default: a fresh temp dir (printed).
- *   --resume              Resume the thread recorded in <state-dir>/agent.json.
+ *   --resume              Resume the session recorded in <state-dir>/agent.json.
  *   --session <id>        Resume this explicit session id (overrides agent.json).
  *   --schema <file>       Verdict JSON Schema the final message is validated
  *                         against. Default: ../assets/reviewer-verdict.schema.json.
  *                         Supported keywords: type, enum, minLength, required,
  *                         properties, additionalProperties:false, items.
- *   --timeout-ms <ms>     Watchdog for the claude process. Default: 900000 (15m).
+ *   --timeout-ms <ms>     Watchdog for the opencode process. Default: 900000 (15m).
+ *   --opencode-bin <path> Explicit opencode binary (overrides PATH search).
  *   -h, --help            Show this help.
  *
  * Exit codes (mirroring codex-review's contract):
  *   0  a valid verdict was produced (approve OR changes_required).
  *   2  usage error (bad flags) — nothing launched.
- *   3  transport: claude unavailable/unauthenticated/timeout/non-zero — retry once.
+ *   3  transport: opencode unavailable/unauthenticated/timeout/non-zero — retry once.
  *   5  contract: empty review target, or the final message was not one valid
  *      schema-conforming verdict — do NOT retry, the same call fails identically.
  *
  * Artifacts under <state-dir>/rounds/<NN>/:
  *   brief.txt      the brief sent for this round
- *   prompt.txt     the exact stdin prompt handed to claude
- *   target.diff    the captured review target (code mode)
- *   events.jsonl   raw claude stream
- *   report.md      the child's full final message
+ *   prompt.txt     the exact message handed to opencode
+ *   target.diff    the captured review target (audit copy; the reviewer reads
+ *                  the twin copy inside the repo git dir — see below)
+ *   events.jsonl   raw opencode --format json stream
+ *   report.md      the reviewer's full final text
  *   verdict.json   the extracted, validated verdict
- * plus <state-dir>/agent.json { sessionId, model, effort } for resume.
+ * plus <state-dir>/agent.json { sessionId, model, effort, agent } for resume.
+ *
+ * The reviewer can only read files inside --repo, so the patch is ALSO written
+ * to <gitdir>/opencode-review/<NN>-<pid>-<time>/target.diff (inside the repo
+ * git dir: readable, yet invisible to `git status`, so the read-only tripwire
+ * stays valid). The prompt points the reviewer at that copy. It is temporary:
+ * the script deletes it on exit; the audit copy in the round dir stays.
  */
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
@@ -82,11 +110,14 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
+  rmdirSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
-import { basename, delimiter, dirname, join, resolve } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir, tmpdir } from "node:os";
 import { StringDecoder } from "node:string_decoder";
@@ -94,8 +125,9 @@ import { StringDecoder } from "node:string_decoder";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_SCHEMA = resolve(HERE, "..", "assets", "reviewer-verdict.schema.json");
 const EFFORT_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);
-const SAFE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._:@\/\[\]-]*$/;
+const SAFE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._:@\/-]*$/;
 const SAFE_SESSION = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
+const SAFE_AGENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const MAX_TIMER_MS = 2_147_483_647;
 
 // Exit codes — kept parallel to codex-review so callers branch identically.
@@ -105,7 +137,7 @@ const EXIT_TRANSPORT = 3;
 const EXIT_CONTRACT = 5;
 
 function die(message, code = EXIT_USAGE) {
-  process.stderr.write(`claude-review: ${message}\n`);
+  process.stderr.write(`opencode-review: ${message}\n`);
   process.exit(code);
 }
 
@@ -118,13 +150,17 @@ function parseArgs(argv) {
     model: null,
     mode: "code",
     target: "working",
+    targetExplicit: false,
+    includeUntracked: [],
+    patch: null,
     effort: "high",
+    agent: "plan",
     stateDir: null,
     resume: false,
     session: null,
     schema: DEFAULT_SCHEMA,
     timeoutMs: 900_000,
-    claudeBin: null,
+    opencodeBin: null,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -144,14 +180,17 @@ function parseArgs(argv) {
       case "--brief": opts.brief = resolve(next()); break;
       case "--model": opts.model = next(); break;
       case "--mode": opts.mode = next(); break;
-      case "--target": opts.target = next(); break;
+      case "--target": opts.target = next(); opts.targetExplicit = true; break;
+      case "--include-untracked": opts.includeUntracked.push(next()); break;
+      case "--patch": opts.patch = resolve(next()); break;
       case "--effort": opts.effort = next(); break;
+      case "--agent": opts.agent = next(); break;
       case "--state-dir": opts.stateDir = resolve(next()); break;
       case "--resume": opts.resume = true; break;
       case "--session": opts.session = next(); break;
       case "--schema": opts.schema = resolve(next()); break;
       case "--timeout-ms": opts.timeoutMs = Number(next()); break;
-      case "--claude-bin": opts.claudeBin = resolve(next()); break;
+      case "--opencode-bin": opts.opencodeBin = resolve(next()); break;
       default:
         die(`unknown option: ${arg}`);
     }
@@ -159,8 +198,11 @@ function parseArgs(argv) {
 
   if (!opts.repo) die("--repo <dir> is required");
   if (!opts.brief) die("--brief <file> is required");
-  if (!opts.model) die("--model <id> is required (pin a model that differs from the implementer's)");
-  if (!SAFE_MODEL.test(opts.model)) die("--model contains unsupported characters");
+  if (!opts.model) die("--model <provider/model> is required (pin a model that differs from the implementer's)");
+  if (!SAFE_MODEL.test(opts.model) || !opts.model.includes("/")) {
+    die('--model must be in provider/model form (e.g. "opencode/muse-spark-1.3-contributor-free")');
+  }
+  if (!SAFE_AGENT.test(opts.agent)) die("--agent contains unsupported characters");
   if (opts.mode !== "code" && opts.mode !== "plan") die(`--mode must be code|plan, got "${opts.mode}"`);
   if (!EFFORT_LEVELS.has(opts.effort)) die(`--effort must be one of ${[...EFFORT_LEVELS].join(", ")}`);
   if (opts.session !== null && !SAFE_SESSION.test(opts.session)) die("--session contains unsupported characters");
@@ -175,18 +217,48 @@ function parseArgs(argv) {
   opts.schemaText = readFileSync(opts.schema, "utf8");
   opts.schemaJson = tryParse(opts.schemaText);
   if (!opts.schemaJson || typeof opts.schemaJson !== "object") die(`--schema is not valid JSON: ${opts.schema}`);
+  if (opts.mode === "plan" && (opts.patch || opts.includeUntracked.length || opts.targetExplicit)) {
+    die("--patch, --include-untracked, and --target need --mode code (plan mode carries no diff)");
+  }
+  if (opts.patch && (opts.targetExplicit || opts.includeUntracked.length)) {
+    die("--patch cannot be combined with --target or --include-untracked (the patch is already hand-built)");
+  }
+  if (opts.patch && (!existsSync(opts.patch) || !statSync(opts.patch).isFile())) {
+    die(`--patch file not found: ${opts.patch}`);
+  }
+  // Flatten repeatable + comma-separated --include-untracked into canonical
+  // (realpath) repo-contained file paths. Canonical form lets captureTarget
+  // compare them with git's own paths even when --repo is a junction,
+  // symlink, or differently-cased path. Validated now (exit 2) so a typo
+  // fails before anything launches.
+  const repoReal = realpathSync.native(opts.repo);
+  opts.includeUntracked = opts.includeUntracked
+    .flatMap((v) => v.split(","))
+    .map((v) => v.trim())
+    .filter(Boolean)
+    .map((v) => resolve(opts.repo, v));
+  opts.includeUntracked = opts.includeUntracked.map((includePath) => {
+    if (!existsSync(includePath) || !statSync(includePath).isFile()) {
+      die(`--include-untracked file not found: ${includePath}`);
+    }
+    const real = realpathSync.native(includePath);
+    if (!isInside(repoReal, real)) die(`--include-untracked path escapes --repo: ${includePath}`);
+    return real;
+  });
   return opts;
 }
 
 function headerComment() {
   const src = readFileSync(fileURLToPath(import.meta.url), "utf8");
   const match = src.match(/\/\*\*([\s\S]*?)\*\//);
-  return match ? `${match[1].replace(/^\s*\* ?/gm, "").trim()}\n` : "claude-review.mjs\n";
+  return match ? `${match[1].replace(/^\s*\* ?/gm, "").trim()}\n` : "opencode-review.mjs\n";
 }
 
-/* --------------------------- claude CLI launcher -------------------------- */
-// Ported from claude-delegate/relay.mjs: resolve `claude` on PATH, handle the
-// Windows .cmd npm shim through cmd.exe with serialized arguments.
+/* --------------------------- opencode CLI launcher ------------------------ */
+// `opencode` is often an npm shim (opencode.cmd / extensionless shell stub next
+// to node, with the real binary at node_modules/opencode-ai/bin/opencode.exe),
+// so PATH probing must cover PATHEXT executables AND the npm sibling layout.
+// A bare `opencode.ps1` on PATH is NOT directly spawnable and is skipped.
 
 function environmentValue(env, name) {
   if (Object.prototype.hasOwnProperty.call(env, name)) return env[name];
@@ -196,25 +268,17 @@ function environmentValue(env, name) {
 }
 
 function childEnvironment() {
-  const env = { ...process.env };
-  if (process.platform === "win32") {
-    for (const key of Object.keys(env)) if (key.toUpperCase() === "CLAUDECODE") delete env[key];
-  } else {
-    delete env.CLAUDECODE;
-  }
-  return env;
+  return { ...process.env };
 }
 
-// Well-known install locations to probe when PATH resolution fails. The native
-// Claude Code installer drops the binary in ~/.local/bin, which is often absent
-// from the Windows process PATH a spawned child inherits (git-bash injects it,
-// cmd/node do not). An explicit override wins over everything.
-function fallbackClaudeDirs(env) {
+// Well-known install locations to probe when PATH resolution fails. An
+// explicit override (--opencode-bin / OPENCODE_REVIEW_CLI) wins over everything.
+function fallbackOpencodeDirs(env) {
   const home = environmentValue(env, "HOME") || environmentValue(env, "USERPROFILE") || homedir();
   const dirs = [];
   if (home) {
     dirs.push(join(home, ".local", "bin"));
-    dirs.push(join(home, ".claude", "local"));
+    dirs.push(join(home, ".opencode", "bin"));
   }
   return dirs;
 }
@@ -223,7 +287,7 @@ function probeDir(dir, cwd, exts) {
   const resolvedDir = resolve(cwd, dir || ".");
   if (process.platform === "win32") {
     for (const ext of exts) {
-      const candidate = join(resolvedDir, `claude${ext}`);
+      const candidate = join(resolvedDir, `opencode${ext}`);
       try {
         if (statSync(candidate).isFile()) {
           return { path: candidate, kind: ext === ".cmd" || ext === ".bat" ? "cmd" : "direct" };
@@ -232,7 +296,7 @@ function probeDir(dir, cwd, exts) {
     }
     return null;
   }
-  const candidate = join(resolvedDir, "claude");
+  const candidate = join(resolvedDir, "opencode");
   try {
     accessSync(candidate, fsConstants.X_OK);
     if (statSync(candidate).isFile()) return { path: candidate, kind: "direct" };
@@ -240,9 +304,23 @@ function probeDir(dir, cwd, exts) {
   return null;
 }
 
-function resolveClaudeLauncher(env, cwd) {
+// npm-global layout: <dir>/node.exe + <dir>/node_modules/opencode-ai/bin/opencode.exe
+function probeNpmSibling(dir, cwd) {
+  const resolvedDir = resolve(cwd, dir || ".");
+  const nodeBin = join(resolvedDir, process.platform === "win32" ? "node.exe" : "node");
+  try {
+    if (!statSync(nodeBin).isFile()) return null;
+  } catch { return null; }
+  const candidate = join(resolvedDir, "node_modules", "opencode-ai", "bin", "opencode.exe");
+  try {
+    if (statSync(candidate).isFile()) return { path: candidate, kind: "direct" };
+  } catch { /* keep searching */ }
+  return null;
+}
+
+function resolveOpencodeLauncher(env, cwd) {
   // 1. Explicit override — a flag value or env var pointing at the binary.
-  const override = env.__claudeReviewCliOverride || environmentValue(env, "CLAUDE_REVIEW_CLI");
+  const override = env.__opencodeReviewCliOverride || environmentValue(env, "OPENCODE_REVIEW_CLI");
   if (override) {
     try {
       if (statSync(override).isFile()) {
@@ -259,8 +337,17 @@ function resolveClaudeLauncher(env, cwd) {
     ? pathValue.split(delimiter).map((e) => e.replace(/^"(.*)"$/, "$1"))
     : [];
 
-  // 2. PATH, then 3. well-known fallback dirs.
-  for (const entry of [...pathEntries, ...fallbackClaudeDirs(env)]) {
+  // 2. PATH executables (skips non-spawnable .ps1 shims), then 3. npm siblings,
+  // then 4. well-known fallback dirs.
+  for (const entry of pathEntries) {
+    const found = probeDir(entry, cwd, exts);
+    if (found) return found;
+  }
+  for (const entry of pathEntries) {
+    const found = probeNpmSibling(entry, cwd);
+    if (found) return found;
+  }
+  for (const entry of fallbackOpencodeDirs(env)) {
     const found = probeDir(entry, cwd, exts);
     if (found) return found;
   }
@@ -269,7 +356,7 @@ function resolveClaudeLauncher(env, cwd) {
 
 function quoteCmdArgument(value) {
   if (/[\0\r\n"%!]/.test(value)) {
-    throw new Error("cannot safely serialize an argument containing %, !, a quote, or a newline for the npm claude.cmd launch");
+    throw new Error("cannot safely serialize an argument containing %, !, a quote, or a newline for the opencode.cmd launch");
   }
   return `"${value}"`;
 }
@@ -287,7 +374,7 @@ function launchSpec(launcher, argv, env) {
   };
 }
 
-function claudeVersion(launcher, env, cwd) {
+function opencodeVersion(launcher, env, cwd) {
   try {
     const spec = launchSpec(launcher, ["--version"], env);
     const probe = spawnSync(spec.command, spec.argv, {
@@ -296,7 +383,7 @@ function claudeVersion(launcher, env, cwd) {
     });
     if (probe.error && probe.error.code === "ENOENT") return null;
     if (probe.status !== 0) return "unknown";
-    return String(probe.stdout || "").trim() || "unknown";
+    return String(probe.stdout || "").trim().split(/\r?\n/)[0] || "unknown";
   } catch { return "unknown"; }
 }
 
@@ -312,11 +399,6 @@ function tryGit(repo, args) {
   try { return git(repo, args); } catch { return null; }
 }
 
-function porcelain(repo) {
-  const out = tryGit(repo, ["status", "--porcelain"]);
-  return out === null ? null : out.split("\n").map((l) => l.trimEnd()).filter(Boolean);
-}
-
 // `git diff --no-index` exits 1 when differences exist (like diff(1)), so
 // exit 0 AND 1 both mean "captured"; anything else (or a signal) is a failure.
 function diffNoIndex(repo, file) {
@@ -328,11 +410,37 @@ function diffNoIndex(repo, file) {
   return execution.stdout || "";
 }
 
-// Build the exact change under review as a single patch string. Returns
+function porcelain(repo) {
+  const out = tryGit(repo, ["status", "--porcelain"]);
+  return out === null ? null : out.split("\n").map((l) => l.trimEnd()).filter(Boolean);
+}
+
+function repositoryRoot(repoInput) {
+  if (!existsSync(repoInput) || !statSync(repoInput).isDirectory()) {
+    throw new Error(`Repository does not exist: ${repoInput}`);
+  }
+  return realpathSync.native(git(repoInput, ["rev-parse", "--show-toplevel"]).trim());
+}
+
+// True when `path` is strictly below `root`. Both must be canonical
+// (realpathSync.native) so junctions and path case do not break the test.
+function isInside(root, path) {
+  const rel = relative(root, path);
+  return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+}
+
+// Absolute path of the repo git dir (handles worktrees, where .git is a
+// file). Throws when git cannot tell us — the caller maps that to a
+// transport failure.
+function gitDir(repo) {
+  return git(repo, ["rev-parse", "--absolute-git-dir"]).trim();
+}
+
+// Build the exact change under review as a single patch string. `working`
+// covers TRACKED changes only (`git diff HEAD`) — untracked files are never
+// swept in; only paths named in `includeUntracked` are appended. Returns
 // { patch, untracked: string[] } or throws on a hard git failure.
-function captureTarget(repoInput, target) {
-  // Run at the worktree root: git reports untracked paths relative to it.
-  const repo = git(repoInput, ["rev-parse", "--show-toplevel"]).trim();
+function captureTarget(repo, target, includeUntracked) {
   if (target.includes("..")) {
     const patch = git(repo, ["diff", target]);
     return { patch, untracked: [], describe: `git diff ${target}` };
@@ -341,18 +449,31 @@ function captureTarget(repoInput, target) {
     const patch = git(repo, ["show", target]);
     return { patch, untracked: [], describe: `git show ${target}` };
   }
-  // working: staged+unstaged vs HEAD, plus untracked file contents.
-  // `ls-files --others` lists every untracked FILE; `status --porcelain`
-  // would collapse a new folder to one `?? dir/` line that cannot be diffed.
-  let patch = git(repo, ["diff", "HEAD"]);
-  const untracked = git(repo, ["ls-files", "--others", "--exclude-standard", "-z"])
-    .split("\0").filter(Boolean);
-  for (const file of untracked) {
-    const extra = diffNoIndex(repo, file);
-    if (extra === null) throw new Error(`could not diff untracked file: ${file}`);
-    if (extra) patch += (patch.endsWith("\n") || patch === "" ? "" : "\n") + extra;
+  const patchParts = [git(repo, ["diff", "HEAD"])];
+  // Ask git for the tracked FILE list (`ls-files`), not `status --porcelain`:
+  // porcelain collapses a new directory to one `?? dir/` line, so a file
+  // inside it would never match and would be dropped silently.
+  const tracked = new Set(git(repo, ["ls-files", "-z"]).split("\0").filter(Boolean));
+  const included = [];
+  for (const includePath of includeUntracked) {
+    if (!isInside(repo, includePath)) {
+      throw new Error(`--include-untracked path is outside the repository root: ${includePath}`);
+    }
+    // Repo-relative, forward-slash path: matches git's own paths and keeps
+    // the diff headers short and readable.
+    const gitPath = relative(repo, includePath).split(sep).join("/");
+    // Tracked paths need no extra work: `git diff HEAD` already covers them.
+    if (tracked.has(gitPath)) continue;
+    const extra = diffNoIndex(repo, gitPath);
+    if (extra === null) throw new Error(`could not diff untracked file: ${gitPath}`);
+    patchParts.push(extra);
+    included.push(includePath);
   }
-  return { patch, untracked, describe: "git diff HEAD (+ untracked files)" };
+  const patch = patchParts.filter((part) => part !== "").join("\n");
+  const describe = included.length
+    ? `git diff HEAD (+ untracked: ${included.map((p) => basename(p)).join(", ")})`
+    : "git diff HEAD (tracked only)";
+  return { patch, untracked: included, describe };
 }
 
 /* --------------------------- prompt construction ------------------------- */
@@ -376,13 +497,17 @@ function schemaContract() {
 function buildPrompt(opts, round, brief) {
   const lines = [];
   lines.push("You are an INDEPENDENT CODE REVIEWER running in a fresh, isolated process.");
-  lines.push("You have NO access to the implementer's chat or reasoning — only what is below plus the repository.");
-  lines.push("You are STRICTLY READ-ONLY: use only Read, Grep, and Glob. Never edit, write, or modify any file.");
+  lines.push("You have NO access to the implementer's chat or reasoning — only the attached instructions plus the repository.");
+  lines.push("You are STRICTLY READ-ONLY: read files, search, and inspect. Never edit, write, create, delete,");
+  lines.push("stage, commit, or push any file, and never run commands that modify the tree. Report only.");
   lines.push(`The repository under review is: ${opts.repo}`);
   lines.push("");
   if (opts.mode === "code") {
     lines.push(`The EXACT change under review (${round.describe}) is in this patch file — read it FIRST:`);
     lines.push(`  ${round.targetPath}`);
+    if (round.handBuilt) {
+      lines.push("The caller built this patch by hand — review exactly these changes, nothing more.");
+    }
     if (round.untracked.length) {
       lines.push(`It includes these untracked files: ${round.untracked.join(", ")}`);
     }
@@ -412,7 +537,8 @@ function buildPrompt(opts, round, brief) {
 }
 
 /* -------------------------- stream-json scanner -------------------------- */
-// Ported from relay.mjs: brace-aware NDJSON scanner tolerant of chunk splits.
+// Brace-aware NDJSON scanner tolerant of chunk splits (opencode --format json
+// emits one JSON object per line, but chunk boundaries are arbitrary).
 
 function makeEventScanner(onObject) {
   let buffer = "", index = 0, depth = 0, start = -1, inString = false, escaped = false;
@@ -445,14 +571,9 @@ function makeEventScanner(onObject) {
   };
 }
 
-function eventSessionId(event) {
-  return event.session_id ?? event.sessionId ??
-    (event.session && (event.session.id ?? event.session.session_id)) ?? null;
-}
-
 /* --------------------------- verdict validation -------------------------- */
 
-// Extract the reviewer's verdict object from its final message. Prefer a clean
+// Extract the reviewer's verdict object from its final text. Prefer a clean
 // whole-string parse; otherwise take the LAST balanced {...} that parses and
 // carries a `verdict` key (guards against prose wrapping the JSON).
 function extractVerdict(finalText) {
@@ -553,26 +674,26 @@ function writeJsonAtomic(path, value) {
 // Emit a structured result on stdout, then exit. Used for every outcome that
 // happens after arg-validation so a caller can always parse stdout for `status`.
 function emitAndExit(result, exit) {
-  process.stdout.write(`${JSON.stringify({ schema: "claude-review.result.v1", ...result }, null, 2)}\n`);
-  if (result.error) process.stderr.write(`claude-review: ${result.status} — ${result.error}\n`);
+  process.stdout.write(`${JSON.stringify({ schema: "opencode-review.result.v1", ...result }, null, 2)}\n`);
+  if (result.error) process.stderr.write(`opencode-review: ${result.status} — ${result.error}\n`);
   process.exit(exit);
 }
 
 function runReview(opts) {
   const env = childEnvironment();
-  if (opts.claudeBin) env.__claudeReviewCliOverride = opts.claudeBin;
-  const launcher = resolveClaudeLauncher(env, opts.repo);
-  const version = launcher ? claudeVersion(launcher, env, opts.repo) : null;
+  if (opts.opencodeBin) env.__opencodeReviewCliOverride = opts.opencodeBin;
+  const launcher = resolveOpencodeLauncher(env, opts.repo);
+  const version = launcher ? opencodeVersion(launcher, env, opts.repo) : null;
   if (!launcher || version === null) {
     emitAndExit({
-      status: "claude_unavailable",
-      error: "`claude` CLI not found on PATH or well-known install dirs. Install Claude Code, run `claude auth login`, or pass --claude-bin <path>.",
-      reviewer: { tool: "claude", model: opts.model, effort: opts.effort, integrity: "by-construction", claudeVersion: null },
+      status: "opencode_unavailable",
+      error: "`opencode` CLI not found on PATH or well-known install dirs. Install opencode, run `opencode auth login`, or pass --opencode-bin <path> (or set OPENCODE_REVIEW_CLI).",
+      reviewer: { tool: "opencode", model: opts.model, effort: opts.effort, integrity: "by-construction", opencodeVersion: null },
     }, EXIT_TRANSPORT);
   }
 
   const stateDir = opts.stateDir ||
-    join(tmpdir(), "claude-review", `${basename(opts.repo) || "repo"}-${timestamp()}-${process.pid}`);
+    join(tmpdir(), "opencode-review", `${basename(opts.repo) || "repo"}-${timestamp()}-${process.pid}`);
   mkdirSync(stateDir, { recursive: true });
 
   // Resolve resume session.
@@ -590,24 +711,65 @@ function runReview(opts) {
 
   const { dir: roundDir, nn } = nextRoundDir(stateDir);
 
-  // Capture the review target BEFORE launching (into the state dir, never the
-  // repo) so an empty target fails closed and the tree stays clean.
-  let round = { describe: "plan review", untracked: [], targetPath: null };
+  // All git inspection runs at the worktree root so porcelain paths and the
+  // git dir resolve the same way no matter which subdir --repo points at.
+  let repository;
+  try { repository = repositoryRoot(opts.repo); }
+  catch (e) {
+    emitAndExit({ status: "target_capture_failed",
+      error: `not a git repository: ${e && e.message ? e.message : e}`,
+      stateDir, roundDir }, EXIT_TRANSPORT);
+  }
+
+  // Capture the review target BEFORE launching so an empty target fails closed
+  // and the tree stays clean. The patch is written twice with identical
+  // bytes: an audit copy in the round dir, and a working copy inside the repo
+  // git dir (the only place the reviewer can read). The git-dir copy is
+  // invisible to `git status`, so the read-only tripwire stays valid.
+  let round = { describe: "plan review", untracked: [], targetPath: null, handBuilt: false };
+  let patchText = null;
   if (opts.mode === "code") {
-    let captured;
-    try { captured = captureTarget(opts.repo, opts.target); }
-    catch (e) {
-      emitAndExit({ status: "target_capture_failed", error: `failed to capture review target: ${e && e.message ? e.message : e}`,
-        stateDir, roundDir }, EXIT_TRANSPORT);
+    let describe;
+    let untracked = [];
+    if (opts.patch) {
+      patchText = readFileSync(opts.patch, "utf8");
+      describe = `hand-built patch ${basename(opts.patch)}`;
+      round.handBuilt = true;
+    } else {
+      let captured;
+      try { captured = captureTarget(repository, opts.target, opts.includeUntracked); }
+      catch (e) {
+        emitAndExit({ status: "target_capture_failed", error: `failed to capture review target: ${e && e.message ? e.message : e}`,
+          stateDir, roundDir }, EXIT_TRANSPORT);
+      }
+      patchText = captured.patch;
+      describe = captured.describe;
+      untracked = captured.untracked;
     }
-    if (!captured.patch.trim()) {
+    if (!patchText.trim()) {
       emitAndExit({ status: "empty_target", verdict: null,
-        error: `the review target (${captured.describe}) is EMPTY — nothing to review. An empty diff is not an approval.`,
-        mode: opts.mode, target: captured.describe, stateDir, roundDir }, EXIT_CONTRACT);
+        error: `the review target (${describe}) is EMPTY — nothing to review. An empty diff is not an approval.`,
+        mode: opts.mode, target: describe, stateDir, roundDir }, EXIT_CONTRACT);
     }
     const targetPath = join(roundDir, "target.diff");
-    writeFileSync(targetPath, captured.patch, "utf8");
-    round = { describe: captured.describe, untracked: captured.untracked, targetPath };
+    writeFileSync(targetPath, patchText, "utf8");
+    let repoTargetPath;
+    try {
+      // One folder per run (round + pid + time), so parallel reviews with
+      // different state dirs never overwrite each other's patch. The copy is
+      // temporary: it is deleted on process exit (the audit copy stays).
+      const repoPatchRoot = join(gitDir(repository), "opencode-review");
+      const repoPatchDir = join(repoPatchRoot, `${nn}-${process.pid}-${timestamp()}`);
+      process.on("exit", () => removeRepoPatch(repoPatchDir, repoPatchRoot));
+      mkdirSync(repoPatchDir, { recursive: true });
+      repoTargetPath = join(repoPatchDir, "target.diff");
+      writeFileSync(repoTargetPath, patchText, "utf8");
+    } catch (e) {
+      emitAndExit({ status: "target_capture_failed",
+        error: `failed to stage the patch inside the repo git dir: ${e && e.message ? e.message : e}`,
+        stateDir, roundDir }, EXIT_TRANSPORT);
+    }
+    round = { describe, untracked: untracked.map((p) => basename(p)), targetPath: repoTargetPath, handBuilt: round.handBuilt, auditPath: targetPath };
   }
 
   const prompt = buildPrompt(opts, round, brief);
@@ -616,61 +778,70 @@ function runReview(opts) {
   const eventsPath = join(roundDir, "events.jsonl");
   writeFileSync(eventsPath, "", "utf8");
 
-  const settingsPath = join(roundDir, "profile.json");
-  writeFileSync(settingsPath, `${JSON.stringify(readOnlyProfile(), null, 2)}\n`, "utf8");
+  const beforeTree = porcelain(repository);
 
-  const beforeTree = porcelain(opts.repo);
+  // The full prompt travels as an attached file (prompt.txt) so its length
+  // and content never hit argv/cmd.exe quoting limits; the positional message
+  // is a short pointer. The reviewer also gets the on-disk path so it can
+  // re-read the file directly from the repo-adjacent state dir.
+  const pointerMessage =
+    `You are an independent code reviewer. The full review instructions are attached. ` +
+    `Read them, read the repository, then return exactly one JSON verdict object and nothing else. ` +
+    `Instructions file: ${join(roundDir, "prompt.txt")}`;
 
+  // `opencode run` greedily treats positionals after `-f` as more files, so the
+  // pointer message MUST come first: `opencode run <message> --dir ... -f ...`.
   const argv = [
-    "-p",
-    "--output-format", "stream-json",
-    "--verbose",
-    "--permission-mode", "plan",
-    "--tools", "Read,Glob,Grep",
-    "--strict-mcp-config",
-    "--disallowedTools", "mcp__*",
-    "--disable-slash-commands",
-    "--settings", settingsPath,
+    "run",
+    pointerMessage,
+    "--dir", opts.repo,
     "--model", opts.model,
-    "--effort", opts.effort,
+    "--agent", opts.agent,
+    "--format", "json",
+    "--variant", opts.effort,
+    "--title", `opencode-review ${basename(opts.repo) || "repo"} round ${nn}`,
   ];
-  if (session) argv.push("--resume", session);
+  if (session) argv.push("--session", session);
+  argv.push("-f", join(roundDir, "prompt.txt"));
 
-  return dispatch({ opts, launcher, env, version, argv, prompt, roundDir, nn, eventsPath, beforeTree, stateDir, round });
-}
+  if (launcher.kind === "cmd" && /[\0\r\n"%!]/.test(pointerMessage)) {
+    emitAndExit({ status: "failed",
+      error: "the pointer message contains characters unsafe for the opencode.cmd launch; pass --opencode-bin <path-to-opencode.exe> instead.",
+      stateDir, roundDir }, EXIT_TRANSPORT);
+  }
 
-function readOnlyProfile() {
-  return {
-    disableClaudeAiConnectors: true,
-    ...(process.platform === "win32" ? { env: { CLAUDE_CODE_USE_POWERSHELL_TOOL: "1" } } : {}),
-    permissions: { deny: [] },
-  };
+  return dispatch({ opts, launcher, env, version, argv, roundDir, nn, eventsPath, beforeTree, stateDir, round, repository });
 }
 
 function dispatch(ctx) {
-  const { opts, launcher, env, version, argv, prompt, roundDir, nn, eventsPath, beforeTree, stateDir, round } = ctx;
-  const state = { sessionId: null, sawResult: false, resultIsError: false, subtype: null, finalMessage: "" };
+  const { opts, launcher, env, version, argv, roundDir, nn, eventsPath, beforeTree, stateDir, round, repository } = ctx;
+  const state = { sessionId: null, texts: [], transportError: null };
   const scan = makeEventScanner((event) => {
     if (!event || typeof event !== "object") return;
-    const sid = eventSessionId(event);
-    if (typeof sid === "string" && sid) state.sessionId = sid;
-    if (event.type !== "result") return;
-    state.sawResult = true;
-    state.subtype = typeof event.subtype === "string" ? event.subtype : null;
-    state.resultIsError = event.is_error === true || (state.subtype !== null && /^error(?:_|$)/i.test(state.subtype));
-    state.finalMessage = typeof event.result === "string" ? event.result : "";
+    if (typeof event.sessionID === "string" && event.sessionID) state.sessionId = event.sessionID;
+    if (event.type === "error") {
+      const msg = event.error && event.error.data && event.error.data.message
+        ? event.error.data.message
+        : (event.error && event.error.name ? event.error.name : "unknown opencode error");
+      state.transportError = String(msg);
+      return;
+    }
+    // Text output arrives as { type: "text", part: { type: "text", text } }.
+    if (event.type === "text" && event.part && typeof event.part.text === "string") {
+      state.texts.push(event.part.text);
+    }
   });
 
   const spec = launchSpec(launcher, argv, env);
   let child;
   try {
     child = spawn(spec.command, spec.argv, {
-      cwd: opts.repo, env, stdio: ["pipe", "pipe", "pipe"],
+      cwd: opts.repo, env, stdio: ["ignore", "pipe", "pipe"],
       detached: process.platform !== "win32", windowsHide: true,
       windowsVerbatimArguments: spec.windowsVerbatimArguments,
     });
   } catch (e) {
-    die(`failed to launch claude: ${e && e.message ? e.message : e}`, EXIT_TRANSPORT);
+    die(`failed to launch opencode: ${e && e.message ? e.message : e}`, EXIT_TRANSPORT);
   }
 
   const decoder = new StringDecoder("utf8");
@@ -687,15 +858,12 @@ function dispatch(ctx) {
     killTree(child);
   }, opts.timeoutMs);
 
-  child.stdin.on("error", () => {});
-  child.stdin.end(prompt);
-
   child.on("error", (e) => {
     clearTimeout(watchdog);
     const unavailable = e && e.code === "ENOENT";
     finish({
       ctx, state, version,
-      status: unavailable ? "claude_unavailable" : "failed",
+      status: unavailable ? "opencode_unavailable" : "failed",
       exit: EXIT_TRANSPORT,
       error: e && e.message ? e.message : String(e),
       stderr: Buffer.concat(stderrChunks).toString("utf8"),
@@ -709,22 +877,31 @@ function dispatch(ctx) {
 
     if (killed) {
       finish({ ctx, state, version, status: "timeout", exit: EXIT_TRANSPORT,
-        error: `claude exceeded --timeout-ms ${opts.timeoutMs}; killed by watchdog`, stderr });
+        error: `opencode exceeded --timeout-ms ${opts.timeoutMs}; killed by watchdog`, stderr });
       return;
     }
-    if (code !== 0 || state.resultIsError || !state.sawResult) {
+    if (state.transportError) {
       finish({ ctx, state, version, status: "failed", exit: EXIT_TRANSPORT,
-        error: state.resultIsError ? `claude returned an error result${state.subtype ? ` (${state.subtype})` : ""}`
-          : !state.sawResult ? "claude exited without a terminal result event"
-          : `claude exited ${code}`, stderr });
+        error: `opencode reported an error: ${state.transportError}`, stderr });
+      return;
+    }
+    if (code !== 0) {
+      finish({ ctx, state, version, status: "failed", exit: EXIT_TRANSPORT,
+        error: `opencode exited ${code}${signal ? ` (${signal})` : ""}`, stderr });
+      return;
+    }
+    if (!state.sessionId) {
+      finish({ ctx, state, version, status: "failed", exit: EXIT_TRANSPORT,
+        error: "opencode output exposed no session id", stderr });
       return;
     }
 
     // Success path: extract + validate the verdict.
-    writeFileSync(join(roundDir, "report.md"), state.finalMessage || "(empty final message)", "utf8");
-    const verdict = extractVerdict(state.finalMessage);
+    const finalMessage = state.texts.join("\n");
+    writeFileSync(join(roundDir, "report.md"), finalMessage || "(empty final message)", "utf8");
+    const verdict = extractVerdict(finalMessage);
     const errors = validateVerdict(verdict, opts.schemaJson);
-    const afterTree = porcelain(opts.repo);
+    const afterTree = porcelain(repository);
     const readOnlyViolation = beforeTree === null || afterTree === null ? null
       : JSON.stringify(beforeTree) !== JSON.stringify(afterTree);
 
@@ -735,21 +912,22 @@ function dispatch(ctx) {
     }
 
     writeJsonAtomic(join(roundDir, "verdict.json"), verdict);
-    writeJsonAtomic(join(stateDir, "agent.json"), { sessionId: state.sessionId, model: opts.model, effort: opts.effort });
+    writeJsonAtomic(join(stateDir, "agent.json"), { sessionId: state.sessionId, model: opts.model, effort: opts.effort, agent: opts.agent });
 
     const result = {
-      schema: "claude-review.result.v1",
+      schema: "opencode-review.result.v1",
       status: "ok",
       verdict: verdict.verdict,
       summary: verdict.summary,
       findings: verdict.findings,
       reviewer: {
-        tool: "claude",
+        tool: "opencode",
         model: opts.model,
         effort: opts.effort,
+        agent: opts.agent,
         integrity: "by-construction",
-        integrityNote: "separate read-only claude process, model pinned via --model; NOT cryptographically verified like codex observedModel/observedSandbox.",
-        claudeVersion: version,
+        integrityNote: "separate read-only opencode process (plan agent), model pinned via --model; NOT cryptographically verified like codex observedModel/observedSandbox.",
+        opencodeVersion: version,
         sessionId: state.sessionId,
         readOnlyViolation,
       },
@@ -763,13 +941,13 @@ function dispatch(ctx) {
         events: eventsPath,
         report: join(roundDir, "report.md"),
         verdict: join(roundDir, "verdict.json"),
-        targetDiff: round.targetPath,
+        targetDiff: round.auditPath || null,
         agent: join(stateDir, "agent.json"),
       },
     };
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     if (readOnlyViolation === true) {
-      process.stderr.write("claude-review: WARNING — the read-only reviewer changed git porcelain; inspect the tree.\n");
+      process.stderr.write("opencode-review: WARNING — the read-only reviewer changed git porcelain; inspect the tree.\n");
     }
     process.exit(EXIT_OK);
   });
@@ -777,16 +955,17 @@ function dispatch(ctx) {
 
 function finish({ ctx, state, version, status, exit, error, stderr, readOnlyViolation = null }) {
   const { opts, roundDir, nn, eventsPath, stateDir, round } = ctx;
-  if (state && state.finalMessage) {
-    try { writeFileSync(join(roundDir, "report.md"), state.finalMessage, "utf8"); } catch { /* best effort */ }
+  const finalMessage = (state && state.texts && state.texts.join("\n")) || "";
+  if (finalMessage) {
+    try { writeFileSync(join(roundDir, "report.md"), finalMessage, "utf8"); } catch { /* best effort */ }
   }
   const result = {
-    schema: "claude-review.result.v1",
+    schema: "opencode-review.result.v1",
     status,
     error,
     reviewer: {
-      tool: "claude", model: opts.model, effort: opts.effort, integrity: "by-construction",
-      claudeVersion: version, sessionId: state ? state.sessionId : null, readOnlyViolation,
+      tool: "opencode", model: opts.model, effort: opts.effort, agent: opts.agent, integrity: "by-construction",
+      opencodeVersion: version, sessionId: state ? state.sessionId : null, readOnlyViolation,
     },
     round: Number(nn),
     mode: opts.mode,
@@ -796,7 +975,7 @@ function finish({ ctx, state, version, status, exit, error, stderr, readOnlyViol
     artifacts: { prompt: join(roundDir, "prompt.txt"), events: eventsPath, report: join(roundDir, "report.md") },
   };
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-  process.stderr.write(`claude-review: ${status} — ${error}\n`);
+  process.stderr.write(`opencode-review: ${status} — ${error}\n`);
   process.exit(exit);
 }
 
@@ -805,6 +984,13 @@ function finish({ ctx, state, version, status, exit, error, stderr, readOnlyViol
 function appendFile(path, chunk) {
   // Append the raw stream to disk instead of buffering it in RAM.
   try { appendFileSync(path, chunk); } catch { /* best effort */ }
+}
+
+// Best effort: drop this run's patch folder, then the shared parent if no
+// other run is still using it (rmdirSync fails on a non-empty dir).
+function removeRepoPatch(dir, root) {
+  try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+  try { rmdirSync(root); } catch { /* still in use or already gone */ }
 }
 
 function killTree(child) {
@@ -821,18 +1007,35 @@ function killTree(child) {
 
 function doctor() {
   const env = childEnvironment();
-  const launcher = resolveClaudeLauncher(env, process.cwd());
+  if (process.argv.includes("--opencode-bin")) {
+    const idx = process.argv.indexOf("--opencode-bin");
+    if (process.argv[idx + 1]) env.__opencodeReviewCliOverride = resolve(process.argv[idx + 1]);
+  }
+  const launcher = resolveOpencodeLauncher(env, process.cwd());
+  const version = launcher ? opencodeVersion(launcher, env, process.cwd()) : null;
+  let auth = null;
+  if (launcher) {
+    try {
+      const spec = launchSpec(launcher, ["auth", "list"], env);
+      const probe = spawnSync(spec.command, spec.argv, {
+        cwd: process.cwd(), env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+        timeout: 30_000, windowsHide: true, windowsVerbatimArguments: spec.windowsVerbatimArguments,
+      });
+      auth = probe.status === 0 ? "authenticated (auth list succeeded)" : "auth list exited non-zero";
+    } catch (e) { auth = `auth probe failed: ${e && e.message ? e.message : e}`; }
+  }
   const report = {
     node: process.version,
     platform: process.platform,
-    claudeFound: Boolean(launcher),
-    claudePath: launcher ? launcher.path : null,
-    claudeVersion: launcher ? claudeVersion(launcher, env, process.cwd()) : null,
+    opencodeFound: Boolean(launcher),
+    opencodePath: launcher ? launcher.path : null,
+    opencodeVersion: version,
+    opencodeAuth: auth,
     schemaDefault: existsSync(DEFAULT_SCHEMA) ? DEFAULT_SCHEMA : `MISSING: ${DEFAULT_SCHEMA}`,
     git: (() => { try { return git(process.cwd(), ["--version"]).trim(); } catch { return null; } })(),
   };
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
-  const ok = report.claudeFound && report.claudeVersion && report.git;
+  const ok = report.opencodeFound && report.opencodeVersion && report.git && existsSync(DEFAULT_SCHEMA);
   process.exit(ok ? EXIT_OK : EXIT_TRANSPORT);
 }
 

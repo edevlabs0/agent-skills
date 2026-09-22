@@ -9,15 +9,16 @@ npx skills add edevlabs0/agent-skills
 
 ## Skills
 
-Two independent-review primitives, plus a workstream runner built on top of them.
+Three independent-review primitives, plus a workstream runner built on top of them.
 
 | Skill | What it does | Reviewer CLI |
 | --- | --- | --- |
 | [`claude-review`](skills/claude-review/SKILL.md) | Independent, structured review of your work from a fresh `claude` process (clean context, read-only, model pinned at the CLI). Returns the same verdict shape as `codex-review`. | Claude Code (`claude`) |
 | [`codex-review`](skills/codex-review/SKILL.md) | Hand the OpenAI Codex CLI a brief and get a light, **verified** read-only verdict (approve / changes_required + findings). Cross-vendor second opinion. | OpenAI Codex (`codex`) |
+| [`opencode-review`](skills/opencode-review/SKILL.md) | Independent, structured review of your work from a fresh `opencode` process (clean context, read-only plan agent, model pinned via `--model` in `provider/model` form). Returns the same verdict shape as `codex-review`. | opencode (`opencode`) |
 | [`ws-go`](skills/ws-go/SKILL.md) | Drive one workstream end to end: detect the implementer (whichever agent runs it), resolve the reviewer per run (flag, saved default, or ask), validate the WS against the real code before implementing, review each plan/change with the reviewer skills, verify with the project's gates, reconcile its docs and status with what actually shipped (deferred parts included), and hand back a fixed staging contract. You stay the implementer; it never stages or commits. | Resolved per run (`-reviewer`, `WS_GO_REVIEWER`, `~/.config/ws-go/config.json`, or ask) |
 
-`claude-review` and `codex-review` are review-only: you stay the implementer (whichever agent you run); the reviewer runs in a separate process and never edits your tree. `ws-go` orchestrates a full workstream but delegates every review to those skills — it plans, implements, and verifies, but never stages or commits.
+`claude-review`, `codex-review`, and `opencode-review` are review-only: you stay the implementer (whichever agent you run); the reviewer runs in a separate process and never edits your tree. `ws-go` orchestrates a full workstream but delegates every review to those skills — it plans, implements, and verifies, but never stages or commits.
 
 ## Install
 
@@ -60,6 +61,7 @@ here reaches each agent on its next `update`.
 - The reviewer CLI for whichever skill you use, authenticated as you would at the terminal:
   - `claude-review` → an authenticated **Claude Code** CLI (`claude`).
   - `codex-review` → an authenticated **OpenAI Codex** CLI (`codex`).
+  - `opencode-review` → an authenticated **opencode** CLI (`opencode`).
 - **No npm account and no publishing** — the Skills CLI installs directly from this GitHub repo.
 - An orchestrating agent that can run shell commands and read files.
 

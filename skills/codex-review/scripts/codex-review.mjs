@@ -9,7 +9,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -75,11 +75,45 @@ function executeSync(command, commandArguments, workingDirectory) {
   return { stdout: execution.stdout || "", stderr: execution.stderr || "" };
 }
 
-function codexBinary() {
-  if (process.env.CODEX_BIN) return process.env.CODEX_BIN;
-  if (process.platform !== "win32" || !process.env.LOCALAPPDATA) return "codex";
-  const desktopBinary = join(process.env.LOCALAPPDATA, "Programs", "OpenAI", "Codex", "bin", "codex.exe");
-  return existsSync(desktopBinary) ? desktopBinary : "codex";
+// Resolve how to launch Codex as { command, prefix } (prefix = arguments placed before Codex's own).
+// On Windows, spawn without a shell cannot run the npm `codex.cmd` shim, and a `.cmd` launch would
+// need cmd.exe quoting for the `-c key="value"` arguments. So find a real `codex.exe` on PATH, or run
+// the npm package's `bin/codex.js` entry with this Node binary — the same thing the shim runs.
+function codexLauncher() {
+  const override = process.env.CODEX_BIN;
+  if (override) {
+    return /\.m?js$/i.test(override) ? { command: process.execPath, prefix: [override] } : { command: override, prefix: [] };
+  }
+  if (process.platform !== "win32") return { command: "codex", prefix: [] };
+  if (process.env.LOCALAPPDATA) {
+    const desktopBinary = join(process.env.LOCALAPPDATA, "Programs", "OpenAI", "Codex", "bin", "codex.exe");
+    if (existsSync(desktopBinary)) return { command: desktopBinary, prefix: [] };
+  }
+  const pathEntries = (process.env.PATH || "").split(delimiter).map((entry) => entry.replace(/^"(.*)"$/, "$1")).filter(Boolean);
+  for (const entry of pathEntries) {
+    const executable = join(entry, "codex.exe");
+    if (existsSync(executable)) return { command: executable, prefix: [] };
+  }
+  for (const entry of pathEntries) {
+    const npmEntry = join(entry, "node_modules", "@openai", "codex", "bin", "codex.js");
+    if (existsSync(npmEntry)) return { command: process.execPath, prefix: [npmEntry] };
+  }
+  return { command: "codex", prefix: [] };
+}
+
+function runCodexSync(commandArguments) {
+  const launcher = codexLauncher();
+  return executeSync(launcher.command, [...launcher.prefix, ...commandArguments], process.cwd());
+}
+
+// On Windows, child.kill() stops only the direct child; the npm entry (node) or Codex itself may
+// have children, so kill the whole tree.
+function killTree(child) {
+  if (process.platform === "win32" && child.pid) {
+    spawnSync("taskkill", ["/pid", String(child.pid), "/t", "/f"], { windowsHide: true, stdio: "ignore" });
+    return;
+  }
+  child.kill("SIGTERM");
 }
 
 function repositoryRoot(repositoryInput) {
@@ -161,6 +195,7 @@ file and run read-only commands (e.g. git diff, grep) to inspect the work. Repor
 - Do not report naming, formatting, or style preferences.
 - blocker = unsafe to ship; major = materially incomplete or unreliable; minor = non-blocking.
 - Approve sound work. Do not manufacture findings.
+- approve may carry minor findings only; any blocker or major finding means changes_required.
 </standing_rules>
 <brief>
 ${brief}
@@ -198,14 +233,15 @@ function validateVerdict(verdictDocument) {
 
 function invokeCodex(invocation) {
   return new Promise((resolveInvocation, rejectInvocation) => {
-    const child = spawn(codexBinary(), invocation.arguments, {
+    const launcher = codexLauncher();
+    const child = spawn(launcher.command, [...launcher.prefix, ...invocation.arguments], {
       cwd: invocation.repository, windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
     });
     let stdoutText = "";
     let stderrText = "";
     let timedOut = false;
     let settled = false;
-    const timer = setTimeout(() => { timedOut = true; child.kill("SIGTERM"); }, invocation.timeoutMilliseconds);
+    const timer = setTimeout(() => { timedOut = true; killTree(child); }, invocation.timeoutMilliseconds);
     child.stdout.on("data", (chunk) => { stdoutText += chunk.toString("utf8"); });
     child.stderr.on("data", (chunk) => { stderrText += chunk.toString("utf8"); });
     child.on("error", (error) => {
@@ -286,7 +322,9 @@ async function review(options) {
   if (turnContext.model !== model) throw new RelayError(`Observed model ${turnContext.model} differs from required ${model}`, 4);
   if (normalizedPath(turnContext.cwd) !== normalizedPath(repository)) throw new RelayError(`Observed cwd ${turnContext.cwd} differs from ${repository}`, 4);
 
-  const verdictDocument = JSON.parse(readFileSync(finalPath, "utf8"));
+  let verdictDocument;
+  try { verdictDocument = JSON.parse(readFileSync(finalPath, "utf8")); }
+  catch (error) { throw new RelayError(`Codex verdict file is not valid JSON: ${error.message}`, 5); }
   validateVerdict(verdictDocument);
 
   writeFileSync(join(stateDirectory, "thread.json"), `${JSON.stringify({ threadId: observedThreadId, model }, null, 2)}\n`, "utf8");
@@ -314,19 +352,21 @@ function doctor(options) {
 
   let codexOk = false;
   try {
-    const version = executeSync(codexBinary(), ["--version"], process.cwd()).stdout.trim();
+    const launcher = codexLauncher();
+    const version = runCodexSync(["--version"]).stdout.trim();
+    record("Codex launcher", true, [launcher.command, ...launcher.prefix].join(" "));
     record("Codex CLI", true, version);
     codexOk = true;
   } catch { record("Codex CLI", false, "not found"); }
 
   if (codexOk) {
-    try { executeSync(codexBinary(), ["login", "status"], process.cwd()); record("Codex auth", true, "authenticated"); }
+    try { runCodexSync(["login", "status"]); record("Codex auth", true, "authenticated"); }
     catch { record("Codex auth", false, "not authenticated (run: codex login)"); }
     try {
       // The harness sets the sandbox via `-c sandbox_mode=...` (a --config override) plus
       // `-s read-only`, pins output with --output-schema, and resumes threads with `exec resume`.
       // Check for those flags, not the literal "sandbox_mode" string (absent from newer help text).
-      const helpText = executeSync(codexBinary(), ["exec", "--help"], process.cwd()).stdout;
+      const helpText = runCodexSync(["exec", "--help"]).stdout;
       const has = (token) => helpText.includes(token);
       const ok = has("--output-schema") && has("--sandbox") && has("--config") && has("resume");
       record("Codex required flags", ok, `--output-schema=${has("--output-schema")}, --sandbox=${has("--sandbox")}, --config=${has("--config")}, resume=${has("resume")}`);

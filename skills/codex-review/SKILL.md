@@ -38,6 +38,11 @@ Node 18+, Git, and an authenticated Codex CLI (`codex login`) that supports `cod
 node <skill-dir>/scripts/codex-review.mjs doctor
 ```
 
+`doctor` prints which Codex launcher it resolved. On Windows the script finds the Codex desktop app's
+`codex.exe`, a `codex.exe` on PATH, or an npm install (it runs the package's `bin/codex.js` with Node,
+because the `codex.cmd` shim cannot be spawned directly). To point at a specific install, set
+`CODEX_BIN=<path>` (a `codex` binary, or a `codex.js` entry file).
+
 ## Reviewing
 
 Write a brief to a file, then run one command. `<sd>` abbreviates `<skill-dir>/scripts/codex-review.mjs`.

@@ -1,6 +1,8 @@
 # OS / editor cruft
 .DS_Store
 *.swp
+.idea/
+.vscode/
 
 # Node
 node_modules/
@@ -10,5 +12,4 @@ CLAUDE.md
 
 # Review run artifacts, if a skill's --state-dir is pointed back into the repo
 .review-state/
-.claude-review/
-.codex-review/
+.*-review/

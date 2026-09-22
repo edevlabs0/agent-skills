@@ -97,12 +97,19 @@ Parameters (this is claude-review's equivalent of codex-review's flags):
   the captured diff, and the repository** — no chat history — so put everything needed in it (goal, what
   changed, what to scrutinize, constraints). See "Writing the brief".
 - **`--model`** — the model to **pin for the reviewer** (`fable`, `claude-fable-5`, `sonnet`, `opus`, …).
-  **Make it differ from the implementer's model.** Default: `fable`.
+  **Make it differ from the implementer's model.** Required — the script has no default; pass `fable`
+  when the implementer is an Opus-class Claude agent (see above).
 - **`--mode`** — `code` (default): the script captures the change as a diff and hands the reviewer that
   patch plus the repo. `plan`: no diff; the plan under review is carried in the brief.
-- **`--target`** (code mode) — what to review: `working` (default = `git diff HEAD` **plus untracked
-  files**), a range `A..B` (`git diff A..B`), or any other value treated as a commit (`git show`). The
-  script **fails closed** if the target is empty — an empty diff is never an approval (exit `5`).
+- **`--target`** (code mode) — what to review: `working` (default = `git diff HEAD` **plus every
+  untracked, non-ignored file**, including each file inside a new folder), a range `A..B`
+  (`git diff A..B`), or any other value treated as a commit (`git show`). The script **fails closed**
+  if the target is empty — an empty diff is never an approval (exit `5`) — and if an untracked file
+  cannot be diffed (exit `3`, `target_capture_failed`); it never drops a file silently.
+- **`--schema`** — the JSON Schema the reviewer's verdict is validated against. Default
+  `assets/reviewer-verdict.schema.json`. The built-in validator supports `type`, `enum`, `minLength`,
+  `required`, `properties`, `additionalProperties: false` and `items`; other keywords are ignored. A
+  custom schema is also shown to the reviewer in the prompt.
 - **`--effort`** — real reviewer reasoning effort, passed to `claude --effort` (`low`…`max`). Default
   `high`. (Unlike the old Agent-tool version, this is a genuine CLI knob, not a brief instruction.)
 - **`--state-dir`** — reused across rounds; holds `rounds/<NN>/` artifacts and `agent.json` (the session
